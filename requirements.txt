@@ -1,0 +1,9 @@
+PyQt6>=6.5.0
+just-playback>=0.1.6
+requests>=2.31.0
+httpx>=0.27.0
+h2
+curl_cffi
+playwright
+chromium
+chromium
