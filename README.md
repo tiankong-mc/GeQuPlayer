@@ -50,19 +50,7 @@
 
 ---
 
-## 📸 截图
 
-> 待补充。欢迎 PR 提交截图！
-
-| 搜索页 | 歌单页 |
-|---|---|
-| ![search](docs/screenshots/search.png) | ![playlist](docs/screenshots/playlist.png) |
-
-| 桌面歌词 | 设置页 |
-|---|---|
-| ![lyrics](docs/screenshots/lyrics.png) | ![settings](docs/screenshots/settings.png) |
-
----
 
 ## 🚀 快速开始
 
