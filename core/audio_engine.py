@@ -1,7 +1,4 @@
-"""音频播放引擎，基于 just_playback + requests 下载缓存
-
-酷我 CDN 防盗链需要完整的浏览器请求特征，这里模拟完整请求头。
-"""
+"""音频播放引擎，基于 just_playback + requests 下载缓存"""
 import hashlib
 import os
 import tempfile
@@ -14,48 +11,12 @@ import requests
 from just_playback import Playback
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from config import USER_AGENT
+from config import USER_AGENT, GEQUBAO_BASE
+from core.gequbao_api import protect_file, unprotect_file
 
 
 _CACHE_DIR = Path(tempfile.gettempdir()) / "musicplayer_cache"
 _CACHE_DIR.mkdir(exist_ok=True)
-
-MIN_VALID_SIZE = 400 * 1024   # 400 KB 以下视为占位音频
-
-# 按优先级尝试的完整请求头组合
-HEADER_VARIANTS = [
-    # 1. 最接近浏览器的请求
-    {
-        "User-Agent": USER_AGENT,
-        "Referer": "https://www.kuwo.cn/",
-        "Origin": "https://www.kuwo.cn",
-        "Accept": "*/*",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        "Accept-Encoding": "identity",
-    },
-    # 2. 带 kw_token cookie
-    {
-        "User-Agent": USER_AGENT,
-        "Referer": "https://www.kuwo.cn/",
-        "Origin": "https://www.kuwo.cn",
-        "Cookie": "kw_token=GY3EWHPDHD",
-        "Accept": "*/*",
-        "Accept-Language": "zh-CN,zh;q=0.9",
-    },
-    # 3. gequbao 来源
-    {
-        "User-Agent": USER_AGENT,
-        "Referer": "https://www.gequbao.com/",
-        "Origin": "https://www.gequbao.com",
-        "Accept": "*/*",
-    },
-    # 4. 无 Referer 但带 Origin
-    {
-        "User-Agent": USER_AGENT,
-        "Origin": "https://www.kuwo.cn",
-        "Accept": "*/*",
-    },
-]
 
 
 class AudioEngine(QObject):
@@ -76,6 +37,7 @@ class AudioEngine(QObject):
         self._current_url: Optional[str] = None
         self._current_info: dict = {}
         self._duration = 0.0
+        self._playing_path: Optional[str] = None   # 当前播放的本地文件
 
         self._play_local_signal.connect(self._do_play_local)
 
@@ -130,79 +92,47 @@ class AudioEngine(QObject):
     def _download_and_play(self, url: str):
         try:
             cache = self._cache_path_for(url)
-
-            if cache.exists() and cache.stat().st_size >= MIN_VALID_SIZE:
-                self._play_local_signal.emit(str(cache))
+            if cache.exists() and cache.stat().st_size > 1024:
+                if not self._stop_flag.is_set():
+                    self._play_local_signal.emit(str(cache))
                 return
-            if cache.exists():
-                try:
-                    cache.unlink()
-                except Exception:
-                    pass
+
+            headers = {
+                "User-Agent": USER_AGENT,
+                "Referer": GEQUBAO_BASE + "/",
+            }
+            r = requests.get(url, headers=headers, stream=True, timeout=30)
+            r.raise_for_status()
 
             tmp = cache.with_suffix(".part")
-            last_err = ""
-
-            for idx, headers in enumerate(HEADER_VARIANTS):
-                if self._stop_flag.is_set():
-                    return
-                try:
-                    self.status_message.emit(
-                        f"正在下载音频... (尝试 {idx + 1}/{len(HEADER_VARIANTS)})"
-                    )
-                    r = requests.get(url, headers=headers, stream=True, timeout=30)
-                    r.raise_for_status()
-
-                    size = 0
-                    with open(tmp, "wb") as f:
-                        for chunk in r.iter_content(64 * 1024):
-                            if self._stop_flag.is_set():
-                                try:
-                                    tmp.unlink()
-                                except Exception:
-                                    pass
-                                return
-                            if chunk:
-                                f.write(chunk)
-                                size += len(chunk)
-
-                    ref = headers.get("Referer", "无")
-                    if size >= MIN_VALID_SIZE:
-                        os.replace(tmp, cache)
-                        print(f"[audio] ✓ 下载成功 size={size} headers变体={idx+1} Referer={ref}", flush=True)
-                        self._play_local_signal.emit(str(cache))
-                        return
-                    else:
-                        last_err = f"文件过小 ({size} 字节)"
-                        print(f"[audio] ✗ 变体{idx+1} Referer={ref} 失败: {last_err}", flush=True)
+            with open(tmp, "wb") as f:
+                for chunk in r.iter_content(64 * 1024):
+                    if self._stop_flag.is_set():
                         try:
                             tmp.unlink()
                         except Exception:
                             pass
-                except Exception as e:
-                    last_err = str(e)
-                    print(f"[audio] ✗ 变体{idx+1} 异常: {e}", flush=True)
-                    try:
-                        if tmp.exists():
-                            tmp.unlink()
-                    except Exception:
-                        pass
-                    continue
+                        return
+                    if chunk:
+                        f.write(chunk)
 
-            self.error_occurred.emit(
-                f"下载失败（已尝试 {len(HEADER_VARIANTS)} 种请求头）: {last_err}"
-            )
-            self.status_message.emit("")
-            self.state_changed.emit("stopped")
+            os.replace(tmp, cache)
+
+            if self._stop_flag.is_set():
+                return
+            self._play_local_signal.emit(str(cache))
 
         except Exception as e:
             if not self._stop_flag.is_set():
                 self.error_occurred.emit(f"播放失败: {e}")
-                self.status_message.emit("")
                 self.state_changed.emit("stopped")
 
     def _do_play_local(self, path: str):
         try:
+            # 保护：正在播放的文件不能被删除
+            protect_file(path)
+            self._playing_path = path
+
             self._playback = Playback()
             self._playback.load_file(path)
             self._duration = self._playback.duration or 0.0
@@ -211,6 +141,9 @@ class AudioEngine(QObject):
             self.status_message.emit("")
             self._start_monitor()
         except Exception as e:
+            # 播放失败，解除保护
+            unprotect_file(path)
+            self._playing_path = None
             self.error_occurred.emit(f"播放失败: {e}")
             self.status_message.emit("")
             self.state_changed.emit("stopped")
@@ -235,6 +168,11 @@ class AudioEngine(QObject):
             except Exception:
                 break
             time.sleep(0.25)
+
+        # 播放结束，解除保护
+        if self._playing_path:
+            unprotect_file(self._playing_path)
+            self._playing_path = None
 
     # ---------- 控制 ----------
     def toggle_pause(self):
@@ -265,6 +203,12 @@ class AudioEngine(QObject):
             except Exception:
                 pass
         self._playback = None
+
+        # 解除播放文件保护
+        if self._playing_path:
+            unprotect_file(self._playing_path)
+            self._playing_path = None
+
         if self._monitor_thread and self._monitor_thread.is_alive():
             self._monitor_thread.join(timeout=0.5)
         self._monitor_thread = None

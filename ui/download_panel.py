@@ -18,11 +18,13 @@ class DownloadPanel(QWidget):
         cfg = load_config()
         self._dir = cfg.get("download_dir", DEFAULT_DOWNLOAD_DIR)
         self._playlist_name = ""
+        self._current_round = 0
 
         self.downloader = Downloader(self)
         self.downloader.set_download_dir(self._dir)
         self.downloader.task_updated.connect(self._on_task_updated)
         self.downloader.all_finished.connect(self._on_all_finished)
+        self.downloader.round_changed.connect(self._on_round_changed)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 16, 20, 12)
@@ -37,7 +39,8 @@ class DownloadPanel(QWidget):
         self.btn_start.setObjectName("PrimaryButton")
         self.btn_start.clicked.connect(self._start)
         self.btn_stop = QPushButton("停止")
-        self.btn_stop.clicked.connect(self.downloader.stop)
+        self.btn_stop.clicked.connect(self._stop)
+        self.btn_stop.setEnabled(False)
         self.btn_clear = QPushButton("清空")
         self.btn_clear.clicked.connect(self._clear)
         bar.addWidget(self.lbl_dir, 1)
@@ -85,10 +88,21 @@ class DownloadPanel(QWidget):
         if not self.downloader.tasks:
             self.status.setText("没有任务")
             return
-        self.status.setText("下载中...（失败会自动重试 2 次）")
+        self.btn_start.setEnabled(False)
+        self.btn_stop.setEnabled(True)
+        self._current_round = 0
+        self.status.setText("下载中...（两轮调度，失败任务会在冷却后重跑）")
         self.downloader.start(self._dir, self._playlist_name)
 
+    def _stop(self):
+        self.downloader.stop()
+        self.status.setText("正在停止...等待当前任务退出")
+        self.btn_stop.setEnabled(False)
+
     def _clear(self):
+        if self.downloader._thread and self.downloader._thread.is_alive():
+            self.status.setText("下载进行中，请先停止")
+            return
         self.downloader.clear()
         self.list.clear()
         self._playlist_name = ""
@@ -105,6 +119,13 @@ class DownloadPanel(QWidget):
             save_config(cfg)
             self.set_download_dir.emit(d)
 
+    def _on_round_changed(self, round_num: int):
+        self._current_round = round_num
+        if round_num == 1:
+            self.status.setText("第 1 轮下载中...")
+        elif round_num == 2:
+            self.status.setText("第 2 轮：重试失败任务中...")
+
     def _on_task_updated(self, idx: int):
         if not (0 <= idx < len(self.downloader.tasks)):
             return
@@ -117,11 +138,14 @@ class DownloadPanel(QWidget):
             elif t.status == "searching":
                 text = f"[搜索中] {display}"
             elif t.status == "downloading":
-                text = f"[下载中] {display}"
+                prefix = f"第{self._current_round}轮" if self._current_round else ""
+                text = f"[{prefix}下载中] {display}"
             elif t.status == "retry":
-                text = f"[重试 {t.retry_count}/2] {display}"
+                text = f"[重试中] {display}"
             elif t.status == "done":
                 text = f"[完成] {display}"
+            elif t.status == "stopped":
+                text = f"[已停止] {display}"
             elif t.status == "skipped":
                 text = f"[跳过] {display}  ({t.error})"
             else:
@@ -129,6 +153,8 @@ class DownloadPanel(QWidget):
             item.setText(text)
 
     def _on_all_finished(self, success: int, total: int):
+        self.btn_start.setEnabled(True)
+        self.btn_stop.setEnabled(False)
         msg = f"全部完成：成功 {success} / 共 {total}"
         if self._playlist_name:
             msg += f"（已生成 {self._playlist_name}.m3u）"

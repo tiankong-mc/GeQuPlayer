@@ -1,9 +1,9 @@
-"""歌单面板：热门歌单 + 搜索歌单 + 粘贴分享链接 + 每首歌下载按钮"""
+"""歌单面板：热门歌单 + 搜索歌单 + 粘贴分享链接 + 勾选下载 + 每首歌下载按钮"""
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QPushButton,
     QListWidget, QListWidgetItem, QLabel, QSplitter, QInputDialog,
-    QMessageBox, QLineEdit,
+    QMessageBox, QLineEdit, QCheckBox,
 )
 
 from core.playlist_parser import (
@@ -24,6 +24,7 @@ class _ClickableLabel(QLabel):
 class PlaylistSongRow(QWidget):
     play_requested = pyqtSignal()
     download_requested = pyqtSignal()
+    checked_changed = pyqtSignal()
 
     def __init__(self, title: str, artist: str, parent=None):
         super().__init__(parent)
@@ -31,9 +32,16 @@ class PlaylistSongRow(QWidget):
         self.artist = artist
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 2, 6, 2)
+        layout.setContentsMargins(6, 2, 6, 2)
         layout.setSpacing(8)
 
+        # 复选框
+        self.checkbox = QCheckBox()
+        self.checkbox.setFixedWidth(22)
+        self.checkbox.stateChanged.connect(lambda _: self.checked_changed.emit())
+        layout.addWidget(self.checkbox)
+
+        # 歌名+歌手（双击播放）
         text = f"{title} - {artist}" if artist else title
         self.label = _ClickableLabel(text)
         self.label.setStyleSheet("color: #e6e6e6; background: transparent;")
@@ -42,22 +50,29 @@ class PlaylistSongRow(QWidget):
         self.label.double_clicked.connect(self.play_requested)
         layout.addWidget(self.label, 1)
 
+        # 单曲下载按钮
         self.btn_dl = QPushButton("下载")
         self.btn_dl.setFixedSize(60, 26)
         self.btn_dl.setObjectName("IconButton")
+        self.btn_dl.setToolTip("只下载这一首")
         self.btn_dl.clicked.connect(self.download_requested)
         layout.addWidget(self.btn_dl)
 
         self.setStyleSheet("background: transparent;")
 
+    def is_checked(self) -> bool:
+        return self.checkbox.isChecked()
+
+    def set_checked(self, checked: bool):
+        self.checkbox.blockSignals(True)
+        self.checkbox.setChecked(checked)
+        self.checkbox.blockSignals(False)
+
 
 class PlaylistPanel(QWidget):
-    # (歌曲列表[PlaylistSong], 起始索引) 用于播放
-    play_list_requested = pyqtSignal(list, int)
-    # (tasks, playlist_name) 用于批量下载
-    download_requested = pyqtSignal(list, str)
-    # (title, artist) 用于单曲下载
-    download_single_requested = pyqtSignal(str, str)
+    play_list_requested = pyqtSignal(list, int)         # (PlaylistSong 列表, 起始索引)
+    download_requested = pyqtSignal(list, str)          # (tasks[(title, artist)], playlist_name)
+    download_single_requested = pyqtSignal(str, str)    # (title, artist)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -65,7 +80,7 @@ class PlaylistPanel(QWidget):
         layout.setContentsMargins(20, 16, 20, 12)
         layout.setSpacing(10)
 
-        # 第一行：平台 + 热门 + 分享
+        # ---------- 第一行：平台 + 热门 + 分享 ----------
         bar1 = QHBoxLayout()
         bar1.setSpacing(10)
         self.platform = QComboBox()
@@ -77,7 +92,7 @@ class PlaylistPanel(QWidget):
         self.btn_load.clicked.connect(self.load_playlists)
 
         self.btn_paste = QPushButton("粘贴歌单链接")
-        self.btn_paste.setToolTip("粘贴酷狗或QQ音乐的分享链接/酷狗码，直接获取歌单内容")
+        self.btn_paste.setToolTip("粘贴酷狗或QQ音乐的分享链接/酷狗码")
         self.btn_paste.clicked.connect(self.paste_share_link)
 
         bar1.addWidget(QLabel("平台："))
@@ -87,7 +102,7 @@ class PlaylistPanel(QWidget):
         bar1.addStretch(1)
         layout.addLayout(bar1)
 
-        # 第二行：搜索歌单
+        # ---------- 第二行：搜索歌单 ----------
         bar2 = QHBoxLayout()
         bar2.setSpacing(10)
         self.input_search = QLineEdit()
@@ -103,10 +118,11 @@ class PlaylistPanel(QWidget):
         bar2.addWidget(self.btn_search)
         layout.addLayout(bar2)
 
-        # 左右分栏
+        # ---------- 左右分栏 ----------
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
 
+        # 左：歌单列表
         left = QWidget()
         ll = QVBoxLayout(left)
         ll.setContentsMargins(0, 0, 8, 0)
@@ -116,17 +132,34 @@ class PlaylistPanel(QWidget):
         self.list_pl.itemClicked.connect(self._on_playlist_selected)
         ll.addWidget(self.list_pl, 1)
 
+        # 右：歌曲列表 + 操作按钮
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.setContentsMargins(8, 0, 0, 0)
+
+        # 操作栏
         top2 = QHBoxLayout()
+        top2.setSpacing(8)
         top2.addWidget(QLabel("歌曲列表"))
         top2.addStretch(1)
-        self.btn_all_dl = QPushButton("一键下载全部")
-        self.btn_all_dl.setObjectName("PrimaryButton")
-        self.btn_all_dl.clicked.connect(self._download_all)
-        top2.addWidget(self.btn_all_dl)
+
+        self.btn_select_all = QPushButton("全选")
+        self.btn_select_all.setObjectName("IconButton")
+        self.btn_select_all.clicked.connect(self._select_all)
+        top2.addWidget(self.btn_select_all)
+
+        self.btn_unselect_all = QPushButton("全不选")
+        self.btn_unselect_all.setObjectName("IconButton")
+        self.btn_unselect_all.clicked.connect(self._unselect_all)
+        top2.addWidget(self.btn_unselect_all)
+
+        self.btn_download_checked = QPushButton("下载勾选")
+        self.btn_download_checked.setObjectName("PrimaryButton")
+        self.btn_download_checked.clicked.connect(self._download_checked)
+        top2.addWidget(self.btn_download_checked)
+
         rl.addLayout(top2)
+
         self.list_songs = QListWidget()
         rl.addWidget(self.list_songs, 1)
 
@@ -228,8 +261,7 @@ class PlaylistPanel(QWidget):
 
         platform, playlist_id = parse_playlist_url(url)
         if not platform or not playlist_id:
-            QMessageBox.warning(self, "无法识别",
-                "无法从该链接识别平台或歌单 ID。")
+            QMessageBox.warning(self, "无法识别", "无法从该链接识别平台或歌单 ID。")
             return
 
         label = {"kugou": "酷狗音乐",
@@ -287,18 +319,75 @@ class PlaylistPanel(QWidget):
             row.download_requested.connect(
                 lambda t=s.title, a=s.artist: self.download_single_requested.emit(t, a)
             )
+            row.checked_changed.connect(self._on_check_changed)
             self.list_songs.setItemWidget(item, row)
 
-        self.status.setText(
-            f"歌单共 {len(songs)} 首 · 双击播放 / 单曲下载 / 右上角批量下载"
-        )
+        self._update_status()
 
-    # ---------- 批量下载 ----------
-    def _download_all(self):
-        if not self._songs:
-            self.status.setText("请先选择一个歌单")
+    # ---------- 勾选 ----------
+    def _on_check_changed(self):
+        self._update_status()
+
+    def _update_status(self):
+        checked = self._get_checked_count()
+        total = len(self._songs)
+        if total == 0:
+            self.status.setText("")
             return
-        pairs = [(s.title, s.artist) for s in self._songs]
+        if checked == 0:
+            self.status.setText(
+                f"歌单共 {total} 首 · 勾选后点「下载勾选」，或双击歌名播放、"
+                f"点行尾「下载」单曲下载"
+            )
+        else:
+            self.status.setText(
+                f"歌单共 {total} 首 · 已勾选 {checked} 首 · 点「下载勾选」批量下载"
+            )
+
+    def _get_checked_count(self) -> int:
+        count = 0
+        for i in range(self.list_songs.count()):
+            item = self.list_songs.item(i)
+            widget = self.list_songs.itemWidget(item)
+            if widget and hasattr(widget, "is_checked") and widget.is_checked():
+                count += 1
+        return count
+
+    def _get_checked_tasks(self):
+        """返回 [(title, artist), ...]"""
+        tasks = []
+        for i in range(self.list_songs.count()):
+            item = self.list_songs.item(i)
+            widget = self.list_songs.itemWidget(item)
+            if widget and hasattr(widget, "is_checked") and widget.is_checked():
+                if 0 <= i < len(self._songs):
+                    s = self._songs[i]
+                    tasks.append((s.title, s.artist))
+        return tasks
+
+    def _select_all(self):
+        for i in range(self.list_songs.count()):
+            item = self.list_songs.item(i)
+            widget = self.list_songs.itemWidget(item)
+            if widget and hasattr(widget, "set_checked"):
+                widget.set_checked(True)
+        self._update_status()
+
+    def _unselect_all(self):
+        for i in range(self.list_songs.count()):
+            item = self.list_songs.item(i)
+            widget = self.list_songs.itemWidget(item)
+            if widget and hasattr(widget, "set_checked"):
+                widget.set_checked(False)
+        self._update_status()
+
+    def _download_checked(self):
+        tasks = self._get_checked_tasks()
+        if not tasks:
+            self.status.setText("请先勾选要下载的歌曲")
+            return
         name = self._current_playlist_name or "歌单"
-        self.download_requested.emit(pairs, name)
-        self.status.setText(f"已加入下载队列：{len(pairs)} 首（完成后会在下载目录生成 {name}.m3u）")
+        self.download_requested.emit(tasks, name)
+        self.status.setText(
+            f"已加入下载队列：{len(tasks)} 首（完成后会在下载目录生成 {name}.m3u）"
+        )

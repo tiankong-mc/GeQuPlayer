@@ -7,3 +7,4 @@ curl_cffi
 playwright
 chromium
 chromium
+ddddocr
