@@ -3,8 +3,7 @@ import os
 import sys
 import subprocess
 
-# ============ 关键：确保项目根目录在 sys.path 里 ============
-# 打包后 sys._MEIPASS 是临时解压目录；源码运行时是 main.py 所在目录
+# ============ 确保项目根目录在 sys.path 里 ============
 if getattr(sys, "frozen", False):
     _BASE = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
 else:
@@ -12,15 +11,44 @@ else:
 
 if _BASE not in sys.path:
     sys.path.insert(0, _BASE)
-# ============================================================
+# ====================================================
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication, QMessageBox, QProgressDialog
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QIcon
 
 from ui.styles import apply_style
 from ui.main_window import MainWindow
 from data.database import init_db
+
+
+def _get_resource_path(name: str) -> str:
+    """获取资源文件的绝对路径（兼容源码运行与打包运行）"""
+    if getattr(sys, "frozen", False):
+        # 打包后：优先 exe 同级目录，其次 _MEIPASS
+        exe_dir = os.path.dirname(sys.executable)
+        cand = os.path.join(exe_dir, name)
+        if os.path.exists(cand):
+            return cand
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            return os.path.join(meipass, name)
+        return cand
+    else:
+        return os.path.join(_BASE, name)
+
+
+def _set_app_icon(app: QApplication):
+    """设置应用窗口/任务栏图标"""
+    try:
+        icon_path = _get_resource_path("myicon.ico")
+        if os.path.exists(icon_path):
+            app.setWindowIcon(QIcon(icon_path))
+            print(f"[main] 窗口图标: {icon_path}", flush=True)
+        else:
+            print(f"[main] 找不到图标文件: {icon_path}", flush=True)
+    except Exception as e:
+        print(f"[main] 设置图标失败: {e}", flush=True)
 
 
 def _read_registry_config():
@@ -202,10 +230,25 @@ def main():
 
     setup_playwright_env()
 
+    # 必须在 QApplication 创建之前设置 AppUserModelID，
+    # 否则任务栏图标不会生效（Windows 特有）
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "tiankong.GeQuPlayer.1")
+        except Exception:
+            pass
+
     app = QApplication(sys.argv)
     app.setApplicationName("GeQuPlayer")
     app.setApplicationDisplayName("GeQuPlayer")
+    app.setOrganizationName("tiankong")
     app.setFont(QFont("Microsoft YaHei UI", 10))
+
+    # ============ 设置窗口/任务栏图标 ============
+    _set_app_icon(app)
+    # =============================================
 
     try:
         from utils.log_capture import LogCapture

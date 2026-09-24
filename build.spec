@@ -21,7 +21,7 @@ if os.path.exists("myicon.ico"):
     datas += [("myicon.ico", ".")]
     print("[build] bundled icon: myicon.ico")
 else:
-    print("[build] 警告：找不到 myicon.ico")
+    print("[build] 警告：找不到 myicon.ico，任务栏图标将使用默认")
 
 if os.path.isdir("assets"):
     datas += [("assets", "assets")]
@@ -142,7 +142,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=False,               # 不显示黑色命令行窗口
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
