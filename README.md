@@ -1,4 +1,4 @@
-# MeloBox
+# GeQuPlayer
 
 > 🎵 一个基于 [gequbao.com](https://www.gequbao.com) 的轻量级 Windows 音乐播放器
 >
@@ -56,7 +56,7 @@
 
 ### 方式一：使用安装包（推荐普通用户）
 
-从 [Releases](https://github.com/yourname/MeloBox/releases) 页面下载最新的 `MeloBox_Setup.exe`，双击安装即可。
+从 [Releases](https://github.com/yourname/MeloBox/releases) 页面下载最新的 `GeQuPlayer_Setup`，双击安装即可。
 
 安装程序会引导你设置：
 - 软件安装位置
@@ -69,8 +69,8 @@
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/yourname/MeloBox.git
-cd MeloBox
+git clone https://github.com/tiankong-mc/GeQuPlayer.git
+cd GeQuPlayer
 
 # 2. 安装依赖
 pip install -r requirements.txt
