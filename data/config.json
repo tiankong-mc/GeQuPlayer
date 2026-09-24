@@ -1,8 +1,10 @@
 {
   "win_w": 1200,
   "win_h": 780,
-  "lyrics_visible": false,
+  "lyrics_visible": true,
   "lyrics_locked": true,
   "download_dir": "H:/歌曲",
-  "playback_mode": "sequence"
+  "playback_mode": "sequence",
+  "concurrent_tasks": 5,
+  "lyrics_mode": "line"
 }

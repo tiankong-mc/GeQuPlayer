@@ -1,9 +1,9 @@
-"""本地音乐面板：左歌单 / 右歌曲"""
+"""本地音乐面板：左歌单 / 右歌曲 + 搜索"""
 import os
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QListWidget,
-    QListWidgetItem, QFileDialog, QMenu, QSplitter,
+    QListWidgetItem, QFileDialog, QMenu, QSplitter, QLineEdit,
 )
 
 from core.local_library import (
@@ -22,7 +22,6 @@ class _ClickableLabel(QLabel):
 
 
 class PlaylistRowWidget(QWidget):
-    """左侧歌单行：歌单名 + ▶一键播放"""
     play_all_requested = pyqtSignal()
     selected_requested = pyqtSignal()
 
@@ -49,7 +48,6 @@ class PlaylistRowWidget(QWidget):
 
 
 class LocalPanel(QWidget):
-    # 播放某个列表(歌曲列表, 起始索引)
     play_list_requested = pyqtSignal(list, int)
     set_download_dir = pyqtSignal(str)
 
@@ -57,7 +55,8 @@ class LocalPanel(QWidget):
         super().__init__(parent)
         self._all_songs = []
         self._playlists = []
-        self._current_list = []       # 右侧当前显示的列表
+        self._current_list = []       # 右侧显示的完整列表（未过滤）
+        self._displayed_list = []     # 右侧实际显示的列表（可能经过搜索过滤）
 
         cfg = load_config()
         self._dir = cfg.get("download_dir", DEFAULT_DOWNLOAD_DIR)
@@ -66,7 +65,7 @@ class LocalPanel(QWidget):
         layout.setContentsMargins(20, 16, 20, 12)
         layout.setSpacing(12)
 
-        # 顶部
+        # ---------- 顶部：目录 + 刷新 ----------
         bar = QHBoxLayout()
         bar.setSpacing(10)
         self.lbl_dir = QLabel(f"目录：{self._dir}")
@@ -81,7 +80,21 @@ class LocalPanel(QWidget):
         bar.addWidget(btn_refresh)
         layout.addLayout(bar)
 
-        # 左右分栏
+        # ---------- 搜索栏 ----------
+        search_bar = QHBoxLayout()
+        search_bar.setSpacing(8)
+        self.input_search = QLineEdit()
+        self.input_search.setPlaceholderText("搜索本地歌曲：输入歌名或歌手（实时过滤）")
+        self.input_search.setClearButtonEnabled(True)
+        self.input_search.textChanged.connect(self._on_search_changed)
+        self.btn_clear_search = QPushButton("清空")
+        self.btn_clear_search.setFixedWidth(60)
+        self.btn_clear_search.clicked.connect(lambda: self.input_search.clear())
+        search_bar.addWidget(self.input_search, 1)
+        search_bar.addWidget(self.btn_clear_search)
+        layout.addLayout(search_bar)
+
+        # ---------- 左右分栏 ----------
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
 
@@ -125,14 +138,32 @@ class LocalPanel(QWidget):
         self.status.setStyleSheet("color:#8b8b8b;")
         layout.addWidget(self.status)
 
+    # ---------- 搜索 ----------
+    def _on_search_changed(self, text: str):
+        keyword = (text or "").strip().lower()
+        if not keyword:
+            self._render_songs(self._current_list)
+            total = len(self._current_list)
+            if total:
+                self.status.setText(f"共 {total} 首歌曲")
+            return
+        filtered = [
+            s for s in self._current_list
+            if keyword in s.title.lower() or keyword in s.artist.lower()
+        ]
+        self._render_songs(filtered)
+        self.status.setText(
+            f"搜索「{keyword}」：找到 {len(filtered)} / {len(self._current_list)} 首"
+        )
+
     # ---------- 刷新 ----------
     def refresh(self):
         self._all_songs = scan_directory(self._dir)
         self._playlists = scan_playlists(self._dir)
 
-        # 左侧：先加"全部歌曲"，再加所有歌单
         self.list_pl.clear()
 
+        # 全部歌曲（特殊项）
         item_all = QListWidgetItem()
         item_all.setSizeHint(QSize(0, 32))
         self.list_pl.addItem(item_all)
@@ -142,6 +173,7 @@ class LocalPanel(QWidget):
         lbl_all.double_clicked.connect(lambda: self._show_all_songs())
         self.list_pl.setItemWidget(item_all, lbl_all)
 
+        # 所有歌单
         for pl in self._playlists:
             item = QListWidgetItem()
             item.setSizeHint(QSize(0, 32))
@@ -151,7 +183,6 @@ class LocalPanel(QWidget):
             row.play_all_requested.connect(lambda _pl=pl: self._play_playlist(_pl))
             self.list_pl.setItemWidget(item, row)
 
-        # 默认显示全部歌曲
         self._show_all_songs()
 
         self.status.setText(
@@ -160,15 +191,23 @@ class LocalPanel(QWidget):
 
     def _show_all_songs(self):
         self._current_list = list(self._all_songs)
-        self._render_songs(self._current_list)
         self.lbl_right_title.setText(f"全部歌曲（{len(self._current_list)}）")
+        # 保持当前搜索词
+        if self.input_search.text().strip():
+            self._on_search_changed(self.input_search.text())
+        else:
+            self._render_songs(self._current_list)
 
     def _show_playlist(self, pl: LocalPlaylist):
         self._current_list = list(pl.songs)
-        self._render_songs(self._current_list)
         self.lbl_right_title.setText(f"{pl.name}（{len(self._current_list)}）")
+        if self.input_search.text().strip():
+            self._on_search_changed(self.input_search.text())
+        else:
+            self._render_songs(self._current_list)
 
     def _render_songs(self, songs):
+        self._displayed_list = list(songs)
         self.list_songs.clear()
         for s in songs:
             item = QListWidgetItem(s.display)
@@ -178,14 +217,15 @@ class LocalPanel(QWidget):
     # ---------- 播放 ----------
     def _on_song_double_click(self, item):
         idx = self.list_songs.row(item)
-        if 0 <= idx < len(self._current_list):
-            self.play_list_requested.emit(self._current_list, idx)
+        if 0 <= idx < len(self._displayed_list):
+            self.play_list_requested.emit(self._displayed_list, idx)
 
     def _play_current_list_all(self):
-        if not self._current_list:
+        lst = self._displayed_list if self._displayed_list else self._current_list
+        if not lst:
             self.status.setText("列表为空")
             return
-        self.play_list_requested.emit(self._current_list, 0)
+        self.play_list_requested.emit(list(lst), 0)
 
     def _play_playlist(self, pl: LocalPlaylist):
         if not pl.songs:
@@ -208,15 +248,15 @@ class LocalPanel(QWidget):
         if not item:
             return
         idx = self.list_songs.row(item)
-        if not (0 <= idx < len(self._current_list)):
+        if not (0 <= idx < len(self._displayed_list)):
             return
-        s = self._current_list[idx]
+        s = self._displayed_list[idx]
         menu = QMenu(self)
         act_play = menu.addAction("播放")
         act_folder = menu.addAction("打开所在文件夹")
         act = menu.exec(self.list_songs.mapToGlobal(pos))
         if act == act_play:
-            self.play_list_requested.emit(self._current_list, idx)
+            self.play_list_requested.emit(self._displayed_list, idx)
         elif act == act_folder:
             os.startfile(os.path.dirname(s.path))
 

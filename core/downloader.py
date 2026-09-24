@@ -9,17 +9,29 @@ from typing import List, Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
+from config import DOWNLOAD_MP3_SUBDIR, DOWNLOAD_LRC_SUBDIR
 from core.gequbao_api import (
     resolve_song, search as gequbao_search, _clean_song_cache,
-    delete_cache_file,
+    delete_cache_file, _pw_cache_path,
 )
 from utils.helpers import sanitize_filename
 
 
 MAX_RETRY_PER_TASK = 1
-CONCURRENT_TASKS = 4
 COOLDOWN_SECONDS = 15
 TOTAL_ROUNDS = 2
+
+CONCURRENT_TASKS = 4
+
+
+def _get_concurrent_tasks() -> int:
+    try:
+        from utils.helpers import load_config
+        cfg = load_config()
+        v = int(cfg.get("concurrent_tasks", 4))
+        return max(1, min(v, 10))
+    except Exception:
+        return 4
 
 
 class DownloadTask:
@@ -53,6 +65,7 @@ class Downloader(QObject):
         self.download_dir = ""
         self.playlist_name = ""
         self._lock = threading.Lock()
+        self._concurrent = CONCURRENT_TASKS
 
     def set_download_dir(self, path):
         self.download_dir = path
@@ -64,6 +77,9 @@ class Downloader(QObject):
     def start(self, download_dir, playlist_name=""):
         if self._thread and self._thread.is_alive():
             return
+        self._concurrent = _get_concurrent_tasks()
+        print(f"[downloader] 同时下载数：{self._concurrent}", flush=True)
+
         self.download_dir = download_dir
         self.playlist_name = playlist_name or ""
         self._stop_flag.clear()
@@ -80,6 +96,20 @@ class Downloader(QObject):
         self.playlist_name = ""
 
     # ---------- 内部 ----------
+    @staticmethod
+    def _unique_path(directory: str, base: str, ext: str) -> str:
+        p = os.path.join(directory, base + ext)
+        if not os.path.exists(p):
+            return p
+        i = 1
+        while i < 10000:
+            p = os.path.join(directory, f"{base} ({i}){ext}")
+            if not os.path.exists(p):
+                return p
+            i += 1
+        import time as _t
+        return os.path.join(directory, f"{base}_{int(_t.time())}{ext}")
+
     def _interruptible_sleep(self, seconds):
         end = time.time() + seconds
         while time.time() < end:
@@ -126,8 +156,8 @@ class Downloader(QObject):
                 break
 
             if round_num > 1:
-                print(f"[downloader] 冷却 {COOLDOWN_SECONDS} 秒后开始第 {round_num} 轮...",
-                      flush=True)
+                print(f"[downloader] 冷却 {COOLDOWN_SECONDS} 秒后开始第 {round_num} 轮"
+                      f"（{len(tasks_to_run)} 首真正失败的任务）...", flush=True)
                 if not self._interruptible_sleep(COOLDOWN_SECONDS):
                     break
 
@@ -149,7 +179,7 @@ class Downloader(QObject):
             return
 
         try:
-            with ThreadPoolExecutor(max_workers=CONCURRENT_TASKS) as pool:
+            with ThreadPoolExecutor(max_workers=self._concurrent) as pool:
                 futures = {}
                 for idx, task in tasks_with_idx:
                     if self._stop_flag.is_set():
@@ -176,22 +206,27 @@ class Downloader(QObject):
     def _finish(self):
         total = len(self.tasks)
         success = sum(1 for t in self.tasks if t.status == "done")
+        skipped = sum(1 for t in self.tasks if t.status == "skipped")
+        failed = sum(1 for t in self.tasks if t.status == "failed")
 
         if self.playlist_name and not self._stop_flag.is_set():
             self._save_playlist_m3u()
 
-        # 最后清理：删掉所有已完成任务的缓存（如果还没删的话）
         self._cleanup_done_cache()
 
-        print(f"[downloader] 完成，成功 {success}/{total}", flush=True)
+        msg = f"[downloader] 完成，成功 {success}/{total}"
+        if skipped:
+            msg += f" / 跳过 {skipped}（搜不到）"
+        if failed:
+            msg += f" / 失败 {failed}"
+        print(msg, flush=True)
+
         self.all_finished.emit(success, total)
 
     def _cleanup_done_cache(self):
-        """兜底清理：把已完成任务对应的缓存文件删掉"""
         for t in self.tasks:
             if t.status == "done" and t.song_id:
                 try:
-                    from core.gequbao_api import _pw_cache_path
                     cache = _pw_cache_path(t.song_id)
                     if cache.exists():
                         delete_cache_file(str(cache), verbose=False)
@@ -206,10 +241,13 @@ class Downloader(QObject):
                 return
             songs = []
             for t in done_tasks:
-                lrc = os.path.splitext(t.filepath)[0] + ".lrc"
+                # LRC 现在在 {download_dir}/LRC/{base}.lrc
+                base = os.path.splitext(os.path.basename(t.filepath))[0]
+                lrc_path = os.path.join(self.download_dir,
+                                        DOWNLOAD_LRC_SUBDIR, base + ".lrc")
                 songs.append(LocalSong(
                     path=t.filepath,
-                    lrc_path=lrc if os.path.exists(lrc) else None,
+                    lrc_path=lrc_path if os.path.exists(lrc_path) else None,
                     title=t.title,
                     artist=t.artist,
                 ))
@@ -251,6 +289,10 @@ class Downloader(QObject):
             if self._stop_flag.is_set():
                 return
 
+            if task.status == "skipped":
+                print(f"[downloader] 「{task.display}」搜不到，跳过重试", flush=True)
+                return
+
             if task.song_id:
                 try:
                     _clean_song_cache(task.song_id)
@@ -258,8 +300,13 @@ class Downloader(QObject):
                     pass
 
         with self._lock:
-            task.status = "failed"
-            task.error = last_err or "未知错误"
+            if task.status == "skipped":
+                pass
+            elif task.status == "stopped":
+                pass
+            else:
+                task.status = "failed"
+                task.error = last_err or "未知错误"
         self.task_updated.emit(idx)
 
     def _process_task(self, idx, task):
@@ -280,7 +327,10 @@ class Downloader(QObject):
                     task.status = "skipped"
                     task.error = "gequbao 未找到匹配"
                 self.task_updated.emit(idx)
+                print(f"[downloader] 「{title} - {artist}」gequbao 搜不到，标记为跳过",
+                      flush=True)
                 return False
+
             song_id = target.song_id
             title = target.title or title
             artist = target.artist or artist
@@ -307,10 +357,20 @@ class Downloader(QObject):
             task.error = "下载失败"
             return False
 
-        os.makedirs(self.download_dir, exist_ok=True)
+        # ============ 分成 MP3/ 和 LRC/ 子目录 ============
+        mp3_dir = os.path.join(self.download_dir, DOWNLOAD_MP3_SUBDIR)
+        lrc_dir = os.path.join(self.download_dir, DOWNLOAD_LRC_SUBDIR)
+        try:
+            os.makedirs(mp3_dir, exist_ok=True)
+            os.makedirs(lrc_dir, exist_ok=True)
+        except Exception as e:
+            task.error = f"创建目录失败: {e}"
+            return False
+
         base = f"{artist} - {title}" if artist else title
         base = sanitize_filename(base)
-        dest_mp3 = os.path.join(self.download_dir, base + ".mp3")
+
+        dest_mp3 = self._unique_path(mp3_dir, base, ".mp3")
 
         try:
             shutil.copy2(src_file, dest_mp3)
@@ -319,16 +379,19 @@ class Downloader(QObject):
             return False
 
         if lyrics:
+            dest_lrc = self._unique_path(lrc_dir, base, ".lrc")
             try:
-                with open(os.path.join(self.download_dir, base + ".lrc"),
-                          "w", encoding="utf-8") as f:
+                with open(dest_lrc, "w", encoding="utf-8") as f:
                     f.write(lyrics)
             except Exception:
                 pass
 
-        # ============ 关键：下载完成后删缓存 ============
-        # 复制成功，缓存副本现在冗余，删除它释放空间
-        # （如果这首歌正在被播放，delete_cache_file 会自动跳过）
+        try:
+            from data.database import add_download
+            add_download(title, artist, dest_mp3)
+        except Exception as e:
+            print(f"[downloader] 记录历史失败: {e}", flush=True)
+
         delete_cache_file(src_file)
 
         with self._lock:

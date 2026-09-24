@@ -1,4 +1,4 @@
-"""桌面歌词悬浮窗：透明背景 + 默认可拖动 + 可锁定穿透（纯 Qt，兼容 Python 3.14）"""
+"""桌面歌词悬浮窗：透明背景 + 默认可拖动 + 可锁定穿透"""
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QPoint, QRect, pyqtSignal
@@ -10,8 +10,16 @@ from PyQt6.QtWidgets import QWidget
 from core.lyrics_parser import Lyrics
 
 
+def _get_lyrics_mode() -> str:
+    try:
+        from utils.helpers import load_config
+        cfg = load_config()
+        return cfg.get("lyrics_mode", "line")
+    except Exception:
+        return "line"
+
+
 class LyricsWindow(QWidget):
-    # 拖动结束后发出，可用于保存位置
     position_changed = pyqtSignal(int, int)
 
     def __init__(self):
@@ -25,23 +33,20 @@ class LyricsWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
 
-        # 字体
         self._font_main = QFont("Microsoft YaHei", 26)
         self._font_main.setBold(True)
         self._font_sub = QFont("Microsoft YaHei", 14)
 
-        # 状态
         self._lyrics: Optional[Lyrics] = None
         self._current_idx = -1
         self._current_time = 0.0
         self._enabled = True
-        self._locked = False    # 默认解锁：可拖动
+        self._locked = False
 
         self._line_main = ""
         self._line_next = ""
         self._word_progress = 0.0
 
-        # 根据屏幕尺寸决定窗口大小
         screen = QGuiApplication.primaryScreen()
         if screen is not None:
             avail = screen.availableGeometry()
@@ -52,10 +57,8 @@ class LyricsWindow(QWidget):
         else:
             self.resize(800, 130)
 
-        # 拖动状态
         self._dragging = False
         self._drag_offset = QPoint()
-
         self.setCursor(Qt.CursorShape.SizeAllCursor)
 
     # ---------- 对外接口 ----------
@@ -90,28 +93,15 @@ class LyricsWindow(QWidget):
         return self._locked
 
     def set_locked(self, locked: bool):
-        """
-        locked=True：鼠标穿透、不可拖动
-        locked=False：可拖动
-        使用 WindowTransparentForInput 原生标志，切换时保留位置
-        """
         if self._locked == locked:
             return
         self._locked = locked
-
-        # 保存当前位置和可见状态
         pos = self.pos()
         visible = self.isVisible()
-
-        # 切换原生窗口标志
         self.setWindowFlag(Qt.WindowType.WindowTransparentForInput, locked)
-
-        # 恢复位置和可见性（setWindowFlag 会隐藏窗口）
         self.move(pos)
         if visible and self._enabled:
             self.show()
-
-        # 光标视觉反馈
         if locked:
             self.unsetCursor()
         else:
@@ -133,16 +123,33 @@ class LyricsWindow(QWidget):
                 if idx + 1 < len(self._lyrics.lines) else ""
 
     def _update_word_progress(self):
+        # ============ 根据配置决定逐字还是逐行 ============
+        mode = _get_lyrics_mode()
+
         if not self._lyrics or self._current_idx < 0:
             self._word_progress = 0.0
             return
+
+        if mode == "line":
+            # 逐行模式：整行均速染色
+            line = self._lyrics.lines[self._current_idx]
+            t0 = line.time
+            t1 = self._lyrics.lines[self._current_idx + 1].time \
+                if self._current_idx + 1 < len(self._lyrics.lines) else t0 + 4.0
+            self._word_progress = max(0.0, min(1.0,
+                (self._current_time - t0) / (t1 - t0))) if t1 > t0 else 1.0
+            return
+
+        # 逐字模式：优先用逐字时间戳，没有则退化为行级
         line = self._lyrics.lines[self._current_idx]
         if not line.words:
             t0 = line.time
             t1 = self._lyrics.lines[self._current_idx + 1].time \
                 if self._current_idx + 1 < len(self._lyrics.lines) else t0 + 4.0
-            self._word_progress = max(0.0, min(1.0, (self._current_time - t0) / (t1 - t0))) if t1 > t0 else 1.0
+            self._word_progress = max(0.0, min(1.0,
+                (self._current_time - t0) / (t1 - t0))) if t1 > t0 else 1.0
             return
+
         words = line.words
         cur = self._current_time
         total_chars = sum(len(w[1]) for w in words)
@@ -187,12 +194,10 @@ class LyricsWindow(QWidget):
         main_x = max(16, (self.width() - main_w) // 2)
         main_y = top + fm_main.ascent()
 
-        # 主歌词底色
         painter.setFont(self._font_main)
         painter.setPen(QPen(QColor(210, 210, 210, 180)))
         painter.drawText(main_x, main_y, main_text)
 
-        # 主歌词前景色（逐字染色）
         if self._word_progress > 0 and main_w > 0:
             painter.save()
             clip_w = int(main_w * self._word_progress)
@@ -201,7 +206,6 @@ class LyricsWindow(QWidget):
             painter.drawText(main_x, main_y, main_text)
             painter.restore()
 
-        # 下一行
         if self._line_next:
             painter.setFont(self._font_sub)
             sub_w = fm_sub.horizontalAdvance(self._line_next)
@@ -212,10 +216,9 @@ class LyricsWindow(QWidget):
 
         painter.end()
 
-    # ---------- 鼠标事件（双重保险：即使穿透没生效，锁定时也不响应拖动） ----------
+    # ---------- 鼠标 ----------
     def mousePressEvent(self, event):
         if self._locked:
-            # 锁定状态：不响应
             event.ignore()
             return
         if event.button() == Qt.MouseButton.LeftButton:
@@ -245,7 +248,6 @@ class LyricsWindow(QWidget):
         super().mouseReleaseEvent(event)
 
     def wheelEvent(self, event):
-        """滚轮调整歌词字号（14~60）"""
         if self._locked:
             event.ignore()
             return

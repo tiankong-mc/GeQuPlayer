@@ -1,12 +1,24 @@
-"""底部播放控制栏"""
-from PyQt6.QtCore import Qt, pyqtSignal
+"""底部播放控制栏（SVG 图标版）"""
+from PyQt6.QtCore import Qt, QSize, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QLabel, QSlider,
 )
 
 from core.audio_engine import AudioEngine
-from core.playback_queue import MODE_ICONS, MODE_NAMES
+from core.playback_queue import MODE_NAMES
 from utils.helpers import format_time
+from utils.icon_helper import get_icon
+
+
+MODE_ICON_MAP = {
+    "loop_list": "repeat_all",
+    "loop_one": "repeat_one",
+    "sequence": "sequential",
+    "shuffle": "shuffle",
+}
+
+ICON_SIZE = 20
+PLAY_ICON_SIZE = 24
 
 
 class PlayerBar(QWidget):
@@ -44,32 +56,42 @@ class PlayerBar(QWidget):
         info_wrap.setFixedWidth(220)
         layout.addWidget(info_wrap)
 
-        # 播放模式按钮
-        self.btn_mode = QPushButton(MODE_ICONS["loop_list"])
+        # 播放模式
+        self.btn_mode = QPushButton()
         self.btn_mode.setObjectName("IconButton")
-        self.btn_mode.setFixedWidth(38)
+        self.btn_mode.setFixedSize(38, 38)
+        self.btn_mode.setIconSize(QSize(ICON_SIZE, ICON_SIZE))
         self.btn_mode.setToolTip("列表循环")
         self.btn_mode.clicked.connect(lambda: self.mode_change_requested.emit())
         layout.addWidget(self.btn_mode)
 
-        # 控制按钮
-        self.btn_prev = QPushButton("⏮")
+        # 上一首
+        self.btn_prev = QPushButton()
         self.btn_prev.setObjectName("IconButton")
+        self.btn_prev.setFixedSize(38, 38)
+        self.btn_prev.setIconSize(QSize(ICON_SIZE, ICON_SIZE))
+        self.btn_prev.setIcon(get_icon("prev", ICON_SIZE))
         self.btn_prev.setToolTip("上一首")
         self.btn_prev.clicked.connect(lambda: self.prev_requested.emit())
+        layout.addWidget(self.btn_prev)
 
-        self.btn_play = QPushButton("▶")
+        # 播放/暂停
+        self.btn_play = QPushButton()
         self.btn_play.setObjectName("PrimaryButton")
-        self.btn_play.setFixedWidth(52)
+        self.btn_play.setFixedSize(48, 48)
+        self.btn_play.setIconSize(QSize(PLAY_ICON_SIZE, PLAY_ICON_SIZE))
+        self.btn_play.setIcon(get_icon("play", PLAY_ICON_SIZE, color="#0e0f12"))
         self.btn_play.setToolTip("播放/暂停")
+        layout.addWidget(self.btn_play)
 
-        self.btn_next = QPushButton("⏭")
+        # 下一首
+        self.btn_next = QPushButton()
         self.btn_next.setObjectName("IconButton")
+        self.btn_next.setFixedSize(38, 38)
+        self.btn_next.setIconSize(QSize(ICON_SIZE, ICON_SIZE))
+        self.btn_next.setIcon(get_icon("next", ICON_SIZE))
         self.btn_next.setToolTip("下一首")
         self.btn_next.clicked.connect(lambda: self.next_requested.emit())
-
-        layout.addWidget(self.btn_prev)
-        layout.addWidget(self.btn_play)
         layout.addWidget(self.btn_next)
 
         # 进度
@@ -87,7 +109,7 @@ class PlayerBar(QWidget):
         layout.addWidget(self.slider, 1)
         layout.addWidget(self.lbl_total)
 
-        # 歌词显示开关
+        # 歌词
         self.btn_lyrics = QPushButton("词")
         self.btn_lyrics.setObjectName("IconButton")
         self.btn_lyrics.setCheckable(True)
@@ -96,7 +118,6 @@ class PlayerBar(QWidget):
         self.btn_lyrics.clicked.connect(self._on_lyrics_btn)
         layout.addWidget(self.btn_lyrics)
 
-        # 歌词锁定开关
         self.btn_lock = QPushButton("锁")
         self.btn_lock.setObjectName("IconButton")
         self.btn_lock.setCheckable(True)
@@ -115,6 +136,9 @@ class PlayerBar(QWidget):
         self.slider.sliderPressed.connect(lambda: setattr(self, "_is_slider_dragging", True))
         self.slider.sliderReleased.connect(lambda: setattr(self, "_is_slider_dragging", False))
 
+        # 初始化播放模式图标
+        self.set_mode("loop_list")
+
     # ---------- 接口 ----------
     def set_song(self, title: str, artist: str = ""):
         self.lbl_title.setText(title or "未播放")
@@ -131,21 +155,22 @@ class PlayerBar(QWidget):
         self.btn_lock.blockSignals(False)
 
     def set_mode(self, mode: str):
-        self.btn_mode.setText(MODE_ICONS.get(mode, "🔁"))
+        icon_name = MODE_ICON_MAP.get(mode, "repeat_all")
+        self.btn_mode.setIcon(get_icon(icon_name, ICON_SIZE))
         self.btn_mode.setToolTip(MODE_NAMES.get(mode, "列表循环"))
 
     def set_playing_ui(self, playing: bool):
-        """外部改变播放状态时的 UI 同步"""
-        self.btn_play.setText("⏸" if playing else "▶")
+        self._update_play_icon(playing)
 
     # ---------- 内部 ----------
-    def _on_state(self, state: str):
-        if state == "playing":
-            self.btn_play.setText("⏸")
-        elif state == "paused":
-            self.btn_play.setText("▶")
+    def _update_play_icon(self, playing: bool):
+        if playing:
+            self.btn_play.setIcon(get_icon("pause", PLAY_ICON_SIZE, color="#0e0f12"))
         else:
-            self.btn_play.setText("▶")
+            self.btn_play.setIcon(get_icon("play", PLAY_ICON_SIZE, color="#0e0f12"))
+
+    def _on_state(self, state: str):
+        self._update_play_icon(state == "playing")
 
     def _on_position(self, cur: float, total: float):
         self.lbl_cur.setText(format_time(cur))
@@ -154,7 +179,7 @@ class PlayerBar(QWidget):
             self.slider.setValue(int(cur / total * 1000))
 
     def _on_finished(self):
-        self.btn_play.setText("▶")
+        self._update_play_icon(False)
         self.slider.setValue(0)
 
     def _on_seek(self):

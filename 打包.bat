@@ -1,2 +1,2 @@
-Remove-Item build, dist -Recurse -Force -ErrorAction SilentlyContinue
+rmdir /s /q build dist
 python -m PyInstaller build.spec --noconfirm

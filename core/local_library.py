@@ -1,4 +1,5 @@
-"""本地音乐库扫描 + .m3u 歌单读取"""
+"""本地音乐库扫描 + .m3u 歌单读写"""
+import os
 from pathlib import Path
 from typing import List, Optional
 
@@ -45,17 +46,50 @@ class LocalPlaylist:
         return f"<LocalPlaylist {self.name} ({len(self.songs)})>"
 
 
+def _find_lrc_for_mp3(mp3_path: Path) -> Optional[str]:
+    """
+    找 mp3 对应的 lrc：
+      1. 同目录同名 .lrc
+      2. {mp3目录}/../LRC/{同名}.lrc  （新结构）
+      3. {mp3目录}/LRC/{同名}.lrc
+    """
+    # 1. 同目录
+    same = mp3_path.with_suffix(".lrc")
+    if same.exists():
+        return str(same)
+
+    stem = mp3_path.stem
+    # 2. 上一级的 LRC/
+    try:
+        parent = mp3_path.parent.parent
+        cand = parent / "LRC" / (stem + ".lrc")
+        if cand.exists():
+            return str(cand)
+    except Exception:
+        pass
+
+    # 3. 同级 LRC/
+    try:
+        cand = mp3_path.parent / "LRC" / (stem + ".lrc")
+        if cand.exists():
+            return str(cand)
+    except Exception:
+        pass
+
+    return None
+
+
 def scan_directory(path: str) -> List[LocalSong]:
-    """扫描目录下所有 mp3"""
+    """扫描目录下所有 mp3（递归，包括 MP3 子目录）"""
     p = Path(path)
     if not p.exists() or not p.is_dir():
         return []
     songs: List[LocalSong] = []
     for f in p.rglob("*.mp3"):
-        lrc = f.with_suffix(".lrc")
+        lrc = _find_lrc_for_mp3(f)
         songs.append(LocalSong(
             path=str(f),
-            lrc_path=str(lrc) if lrc.exists() else None,
+            lrc_path=lrc,
         ))
     songs.sort(key=lambda s: s.title.lower())
     return songs
@@ -76,7 +110,6 @@ def scan_playlists(path: str) -> List[LocalPlaylist]:
 
 
 def load_m3u(m3u_path: str) -> Optional[LocalPlaylist]:
-    """读取 .m3u 文件"""
     lines = None
     for enc in ("utf-8", "utf-8-sig", "gbk", "gb18030"):
         try:
@@ -117,15 +150,16 @@ def load_m3u(m3u_path: str) -> Optional[LocalPlaylist]:
         if line.startswith("#"):
             continue
 
+        # 支持相对路径
         full = Path(line)
         if not full.is_absolute():
             full = (base_dir / line).resolve()
         if not full.exists():
             continue
-        lrc = full.with_suffix(".lrc")
+        lrc = _find_lrc_for_mp3(full)
         songs.append(LocalSong(
             path=str(full),
-            lrc_path=str(lrc) if lrc.exists() else None,
+            lrc_path=lrc,
             title=pending_title,
             artist=pending_artist,
         ))
@@ -136,14 +170,24 @@ def load_m3u(m3u_path: str) -> Optional[LocalPlaylist]:
 
 
 def save_m3u(m3u_path: str, name: str, songs: List[LocalSong]):
-    """保存 .m3u 文件"""
+    """
+    保存 .m3u 文件。
+    歌曲路径写成相对于 m3u 文件所在目录的相对路径（用 / 分隔）。
+    """
     try:
+        base_dir = Path(m3u_path).parent
         with open(m3u_path, "w", encoding="utf-8") as f:
             f.write("#EXTM3U\n")
             f.write(f"#PLAYLIST:{name}\n")
             for s in songs:
                 f.write(f"#EXTINF:-1,{s.artist} - {s.title}\n")
-                f.write(Path(s.path).name + "\n")
+                try:
+                    rel = os.path.relpath(s.path, base_dir)
+                except Exception:
+                    rel = s.path
+                # 统一用正斜杠（跨平台兼容）
+                rel = rel.replace("\\", "/")
+                f.write(rel + "\n")
         return True
     except Exception as e:
         print(f"[local_library] save_m3u error: {e}", flush=True)

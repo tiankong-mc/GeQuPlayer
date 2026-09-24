@@ -15,6 +15,8 @@ from typing import List, Optional, Dict, Tuple
 
 from curl_cffi import requests as curl_requests
 
+from config import CACHE_SUBDIR_NAME, CACHE_MARKER_FILE, APP_NAME
+
 warnings.filterwarnings("ignore", category=SyntaxWarning)
 
 
@@ -49,10 +51,8 @@ UA_POOL = [
 
 DESKTOP_UA = UA_POOL[0]
 
-_DEFAULT_CACHE_DIR = Path(tempfile.gettempdir()) / "musicplayer_cache"
 
-
-# ---------- 缓存文件保护（正在播放的不删） ----------
+# ---------- 缓存文件保护 ----------
 _protected_lock = threading.Lock()
 _protected_files = set()
 
@@ -79,10 +79,6 @@ def is_protected(path: str) -> bool:
 
 
 def delete_cache_file(path: str, verbose: bool = True) -> bool:
-    """
-    删除缓存文件。如果文件正在播放（受保护）则跳过。
-    返回 True 表示已删除或无需删除，False 表示被保护跳过。
-    """
     if not path:
         return True
     p = os.path.abspath(str(path))
@@ -101,57 +97,99 @@ def delete_cache_file(path: str, verbose: bool = True) -> bool:
         return False
 
 
+# ---------- 缓存目录（安全版） ----------
+def _default_cache_root() -> Path:
+    """默认缓存根目录（系统 temp）"""
+    return Path(tempfile.gettempdir())
+
+
+def get_cache_dir() -> Path:
+    """
+    返回真实的缓存目录。
+    - 用户在设置里指定的路径会作为"根"，程序固定在其下创建 GeQuPlayerCache 子目录
+    - 子目录里会写入标识文件（用于清理时验证）
+    - 这样即使用户误选桌面/文档，清空缓存也不会误删用户文件
+    """
+    try:
+        from utils.helpers import load_config
+        cfg = load_config()
+        custom = cfg.get("cache_dir")
+    except Exception:
+        custom = None
+
+    if custom:
+        base = Path(custom)
+    else:
+        base = _default_cache_root()
+
+    # 强制使用程序专属子目录
+    cache = base / CACHE_SUBDIR_NAME
+
+    try:
+        cache.mkdir(parents=True, exist_ok=True)
+        marker = cache / CACHE_MARKER_FILE
+        if not marker.exists():
+            marker.write_text(f"{APP_NAME} cache marker\n", encoding="utf-8")
+    except Exception as e:
+        print(f"[cache] 无法创建缓存目录 {cache}: {e}", flush=True)
+        # 兜底：退回系统 temp
+        cache = _default_cache_root() / CACHE_SUBDIR_NAME
+        try:
+            cache.mkdir(parents=True, exist_ok=True)
+            marker = cache / CACHE_MARKER_FILE
+            if not marker.exists():
+                marker.write_text(f"{APP_NAME} cache marker\n", encoding="utf-8")
+        except Exception:
+            pass
+
+    return cache
+
+
+def is_valid_cache_dir(path: Path) -> bool:
+    """验证一个目录是否是程序自己的缓存目录（存在标识文件）"""
+    try:
+        if not path or not path.is_dir():
+            return False
+        marker = path / CACHE_MARKER_FILE
+        if not marker.exists():
+            return False
+        content = marker.read_text(encoding="utf-8", errors="ignore")
+        return APP_NAME in content
+    except Exception:
+        return False
+
+
+def get_default_cache_dir() -> Path:
+    return _default_cache_root() / CACHE_SUBDIR_NAME
+
+
+# 兼容旧引用
+_CACHE_DIR = _default_cache_root() / CACHE_SUBDIR_NAME
+
+
 # ---------- 选择器 ----------
 DOWNLOAD_BUTTON_SELECTORS = [
-    "a:has-text('下载歌曲')",
-    "button:has-text('下载歌曲')",
-    "text=下载歌曲",
-    ".btn:has-text('下载歌曲')",
+    "a:has-text('下载歌曲')", "button:has-text('下载歌曲')",
+    "text=下载歌曲", ".btn:has-text('下载歌曲')",
 ]
-
 QUALITY_DIALOG_SELECTORS = [
-    "text=请选择音质",
-    "text=下载低品质MP3",
-    "text=下载高品质MP3",
-    "text=低品质MP3",
-    "text=高品质MP3",
+    "text=请选择音质", "text=下载低品质MP3", "text=下载高品质MP3",
+    "text=低品质MP3", "text=高品质MP3",
 ]
-
-LOW_QUALITY_SELECTORS = [
-    "text=下载低品质MP3",
-    "text=低品质MP3",
-    ":has-text('低品质MP3')",
-]
-
-HIGH_QUALITY_SELECTORS = [
-    "text=下载高品质MP3",
-    "text=高品质MP3",
-    ":has-text('高品质MP3')",
-]
-
+LOW_QUALITY_SELECTORS = ["text=下载低品质MP3", "text=低品质MP3", ":has-text('低品质MP3')"]
+HIGH_QUALITY_SELECTORS = ["text=下载高品质MP3", "text=高品质MP3", ":has-text('高品质MP3')"]
 CAPTCHA_INPUT_SELECTORS = [
-    "input[placeholder*='验证码']",
-    "input[name*='captcha']",
-    "input[name*='verify']",
-    "div[role='dialog'] input[type='text']",
-    "div.modal input[type='text']",
-    "input[type='text']",
+    "input[placeholder*='验证码']", "input[name*='captcha']",
+    "input[name*='verify']", "div[role='dialog'] input[type='text']",
+    "div.modal input[type='text']", "input[type='text']",
 ]
-
 CAPTCHA_IMG_SELECTORS = [
-    "img[src*='captcha']",
-    "img[src*='verify']",
-    ".captcha-img",
-    ".captcha img",
-    "div[role='dialog'] img",
-    "div.modal img",
+    "img[src*='captcha']", "img[src*='verify']", ".captcha-img",
+    ".captcha img", "div[role='dialog'] img", "div.modal img",
 ]
-
 CAPTCHA_SUBMIT_SELECTORS = [
-    "button:has-text('提交验证')",
-    "button:has-text('提交')",
-    "button:has-text('确定')",
-    "a:has-text('提交验证')",
+    "button:has-text('提交验证')", "button:has-text('提交')",
+    "button:has-text('确定')", "a:has-text('提交验证')",
 ]
 
 
@@ -171,29 +209,7 @@ def _throttle():
         _last_request_time = time.time()
 
 
-# ---------- 缓存目录 ----------
-def get_cache_dir() -> Path:
-    try:
-        from utils.helpers import load_config
-        cfg = load_config()
-        custom = cfg.get("cache_dir")
-        p = Path(custom) if custom else _DEFAULT_CACHE_DIR
-    except Exception:
-        p = _DEFAULT_CACHE_DIR
-    try:
-        p.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
-    return p
-
-
-def get_default_cache_dir() -> Path:
-    return _DEFAULT_CACHE_DIR
-
-
-_CACHE_DIR = _DEFAULT_CACHE_DIR
-
-
+# ---------- Song ----------
 class Song:
     __slots__ = ("title", "artist", "song_id", "detail_url")
 
@@ -211,12 +227,9 @@ class Song:
         return f"<Song {self.display}>"
 
 
-_MP3_MAGIC = [
-    b"ID3",
-    b"\xff\xfb", b"\xff\xfa",
-    b"\xff\xf3", b"\xff\xf2",
-    b"\xff\xe3", b"\xff\xe2",
-]
+# ---------- MP3 校验 ----------
+_MP3_MAGIC = [b"ID3", b"\xff\xfb", b"\xff\xfa", b"\xff\xf3",
+              b"\xff\xf2", b"\xff\xe3", b"\xff\xe2"]
 
 
 def _is_valid_mp3(path: Path) -> bool:
@@ -238,6 +251,7 @@ def _is_stopped(stop_flag) -> bool:
     return stop_flag is not None and stop_flag.is_set()
 
 
+# ---------- 搜索 ----------
 _SONG_LINK_RE = re.compile(
     r'<a\s+href="/music/(\d+)"[^>]*class="hover-zoom[^"]*"[^>]*title="([^"]*)"', re.I)
 _SONG_LINK_RE2 = re.compile(
@@ -667,8 +681,7 @@ def _pw_session_attempt(song_id: str, session_idx: int, stop_flag=None
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             ctx = browser.new_context(
-                user_agent=ua,
-                locale="zh-CN",
+                user_agent=ua, locale="zh-CN",
                 viewport={"width": 1280, "height": 800},
                 extra_http_headers={"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"},
             )
@@ -680,12 +693,10 @@ def _pw_session_attempt(song_id: str, session_idx: int, stop_flag=None
                     ct = (resp.headers.get("content-type", "") or "").lower()
                     cl_str = resp.headers.get("content-length", "") or ""
                     cl = int(cl_str) if cl_str.isdigit() else 0
-
                     if ".js" in u.lower() or ".css" in u.lower() or ".html" in u.lower():
                         return
                     if "gequbao.com/build" in u:
                         return
-
                     is_audio = False
                     if "audio/" in ct or "mpeg" in ct or "octet-stream" in ct:
                         is_audio = True
@@ -694,7 +705,6 @@ def _pw_session_attempt(song_id: str, session_idx: int, stop_flag=None
                     elif cl > 1_000_000 and not any(x in ct for x in
                                                     ["html", "json", "javascript", "css", "image", "font"]):
                         is_audio = True
-
                     if is_audio:
                         if u not in [c[0] for c in captured]:
                             captured.append((u, ct, cl))
@@ -703,7 +713,6 @@ def _pw_session_attempt(song_id: str, session_idx: int, stop_flag=None
                     pass
 
             page.on("response", on_response)
-
             detail_url = GEQUBAO_DETAIL_URL.format(song_id=song_id)
             print(f"[pw] 会话{session_idx} 打开 {detail_url} (UA尾号{ua[-30:]})", flush=True)
 

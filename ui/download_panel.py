@@ -1,13 +1,19 @@
-"""下载面板"""
+"""下载面板：带实时日志显示"""
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QListWidget, QListWidgetItem, QFileDialog,
+    QListWidget, QListWidgetItem, QFileDialog, QSplitter,
+    QPlainTextEdit,
 )
 
 from core.downloader import Downloader
 from utils.helpers import load_config, save_config
+from utils.log_capture import LogCapture
 from config import DEFAULT_DOWNLOAD_DIR
+
+
+MAX_LOG_LINES = 3000
 
 
 class DownloadPanel(QWidget):
@@ -19,6 +25,7 @@ class DownloadPanel(QWidget):
         self._dir = cfg.get("download_dir", DEFAULT_DOWNLOAD_DIR)
         self._playlist_name = ""
         self._current_round = 0
+        self._log_visible = False
 
         self.downloader = Downloader(self)
         self.downloader.set_download_dir(self._dir)
@@ -30,33 +37,104 @@ class DownloadPanel(QWidget):
         layout.setContentsMargins(20, 16, 20, 12)
         layout.setSpacing(12)
 
+        # ============ 顶部按钮栏 ============
         bar = QHBoxLayout()
+        bar.setSpacing(8)
+
         self.lbl_dir = QLabel(f"下载目录：{self._dir}")
         self.lbl_dir.setStyleSheet("color:#9a9a9a;")
+
+        # 查看实时进度（可勾选），位置在"更换目录"左边
+        self.btn_log = QPushButton("查看实时进度")
+        self.btn_log.setCheckable(True)
+        self.btn_log.setChecked(False)
+        self.btn_log.setToolTip("显示/隐藏后台运行日志（打开链接、下载进度等）")
+        self.btn_log.clicked.connect(self._toggle_log)
+
         btn_dir = QPushButton("更换目录")
         btn_dir.clicked.connect(self._change_dir)
+
         self.btn_start = QPushButton("开始下载")
         self.btn_start.setObjectName("PrimaryButton")
         self.btn_start.clicked.connect(self._start)
+
         self.btn_stop = QPushButton("停止")
         self.btn_stop.clicked.connect(self._stop)
         self.btn_stop.setEnabled(False)
+
         self.btn_clear = QPushButton("清空")
         self.btn_clear.clicked.connect(self._clear)
+
         bar.addWidget(self.lbl_dir, 1)
+        bar.addWidget(self.btn_log)
         bar.addWidget(btn_dir)
         bar.addWidget(self.btn_start)
         bar.addWidget(self.btn_stop)
         bar.addWidget(self.btn_clear)
         layout.addLayout(bar)
 
+        # ============ 主体：左右分栏 ============
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.setChildrenCollapsible(False)
+
+        # 左：下载列表
         self.list = QListWidget()
-        layout.addWidget(self.list, 1)
+        self.splitter.addWidget(self.list)
+
+        # 右：日志视图（默认隐藏）
+        self.log_view = QPlainTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setStyleSheet(
+            "background-color:#0e0f12; color:#c8c8c8; "
+            "border:1px solid #26272c; border-radius:10px; padding:6px;"
+        )
+        self.log_view.setFont(QFont("Consolas", 9))
+        self.log_view.setMaximumBlockCount(MAX_LOG_LINES)
+        self.log_view.setPlaceholderText(
+            "后台运行日志将显示在这里...\n\n"
+            "例如：\n"
+            "  [pw] 会话1 打开 https://...\n"
+            "  [pw] 步骤1：点击下载\n"
+            "  [download] ✓ 成功 5127719"
+        )
+        self.log_view.hide()
+        self.splitter.addWidget(self.log_view)
+
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 1)
+        layout.addWidget(self.splitter, 1)
 
         self.status = QLabel("等待任务...")
         self.status.setStyleSheet("color:#8b8b8b;")
         layout.addWidget(self.status)
 
+        # 连接日志捕获信号
+        try:
+            LogCapture.instance().message_written.connect(self._on_log_message)
+        except Exception as e:
+            print(f"[download_panel] 日志信号连接失败: {e}", flush=True)
+
+    # ============ 日志切换 ============
+    def _toggle_log(self, checked: bool):
+        self._log_visible = checked
+        if checked:
+            self.log_view.show()
+            w = self.splitter.width()
+            self.splitter.setSizes([w // 2, w // 2])
+            self.btn_log.setText("隐藏实时进度")
+        else:
+            self.log_view.hide()
+            self.btn_log.setText("查看实时进度")
+
+    def _on_log_message(self, text: str):
+        if not self._log_visible:
+            return
+        try:
+            self.log_view.appendPlainText(text)
+        except Exception:
+            pass
+
+    # ============ 任务管理 ============
     def add_tasks(self, tasks, playlist_name: str = ""):
         added = 0
         for t in tasks:
@@ -119,6 +197,7 @@ class DownloadPanel(QWidget):
             save_config(cfg)
             self.set_download_dir.emit(d)
 
+    # ============ 状态更新 ============
     def _on_round_changed(self, round_num: int):
         self._current_round = round_num
         if round_num == 1:

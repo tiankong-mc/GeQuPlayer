@@ -1,15 +1,11 @@
 """主窗口"""
 from PyQt6.QtCore import QTimer
-from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QTabWidget,
-)
+from PyQt6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QTabWidget
 
 from core.audio_engine import AudioEngine
-from core.gequbao_api import Song, resolve_song
+from core.gequbao_api import Song, resolve_song, get_lyrics
 from core.lyrics_parser import load_lrc_file, parse_lrc
-from core.playback_queue import (
-    PlaybackQueue, PlaybackMode, QueueItem, MODE_NAMES,
-)
+from core.playback_queue import PlaybackQueue, PlaybackMode, QueueItem, MODE_NAMES
 
 from ui.search_panel import SearchPanel
 from ui.playlist_panel import PlaylistPanel
@@ -25,7 +21,7 @@ from utils.helpers import run_async, load_config, save_config
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("MusicPlayer · gequbao 在线音乐")
+        self.setWindowTitle("GeQuPlayer · gequbao 在线音乐")
         cfg = load_config()
         self.resize(int(cfg.get("win_w", 1200)), int(cfg.get("win_h", 780)))
         self.setMinimumSize(1080, 680)
@@ -33,12 +29,12 @@ class MainWindow(QMainWindow):
         self._lyrics_visible = bool(cfg.get("lyrics_visible", False))
         self._lyrics_locked = bool(cfg.get("lyrics_locked", False))
 
+        self._play_request_id = 0
+
         self.audio = AudioEngine(self)
         self.lyrics_window = LyricsWindow()
         self.queue = PlaybackQueue()
-        # 恢复上次的播放模式
         self.queue.set_mode(cfg.get("playback_mode", PlaybackMode.LOOP_LIST))
-
         self._current_song_info = {}
 
         central = QWidget()
@@ -48,7 +44,6 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Tab
         self.tabs = QTabWidget()
         self.search_panel = SearchPanel(self)
         self.playlist_panel = PlaylistPanel(self)
@@ -63,7 +58,6 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.settings_panel, "设置")
         layout.addWidget(self.tabs, 1)
 
-        # 播放栏
         self.player_bar = PlayerBar(self.audio, self)
         self.player_bar.set_mode(self.queue.mode)
         self.player_bar.set_lyrics_checked(self._lyrics_visible)
@@ -111,9 +105,10 @@ class MainWindow(QMainWindow):
         self._save_timer.setSingleShot(True)
         self._save_timer.timeout.connect(self._save_window_size)
 
+        print("[main] 主窗口初始化完成", flush=True)
+
     # ---------- 播放队列 ----------
     def _play_search_list(self, songs, index):
-        """搜索列表播放"""
         items = [QueueItem(title=s.title, artist=s.artist, song_id=s.song_id)
                  for s in songs]
         if not items:
@@ -122,7 +117,6 @@ class MainWindow(QMainWindow):
         self._play_queue_current()
 
     def _play_playlist_list(self, songs, index):
-        """在线歌单播放"""
         items = [QueueItem(title=s.title, artist=s.artist, song_id=None)
                  for s in songs]
         if not items:
@@ -131,7 +125,6 @@ class MainWindow(QMainWindow):
         self._play_queue_current()
 
     def _play_local_list(self, songs, index):
-        """本地列表播放"""
         items = [QueueItem(title=s.title, artist=s.artist,
                            song_id=None, file_path=s.path)
                  for s in songs]
@@ -141,14 +134,15 @@ class MainWindow(QMainWindow):
         self._play_queue_current()
 
     def _play_queue_current(self):
-        """播放队列当前项"""
         item = self.queue.current()
         if item is None:
             return
         self._play_item(item)
 
     def _play_item(self, item: QueueItem):
-        """播放单个队列项（本地或在线）"""
+        self._play_request_id += 1
+        req_id = self._play_request_id
+
         self.player_bar.set_song(item.title, item.artist)
         info = {"title": item.title, "artist": item.artist}
         if item.song_id:
@@ -159,44 +153,115 @@ class MainWindow(QMainWindow):
             info["path"] = item.file_path
             self._current_song_info = info
             self.audio.play_file(item.file_path, info=info)
-            # 歌词优先用 item.lyrics，其次找同名 .lrc
+
+            print(f"[main] 本地文件播放: {item.file_path}", flush=True)
+
+            # 尝试加载歌词
+            lyrics_text = None
             if item.lyrics:
-                lyr = parse_lrc(item.lyrics)
-                self.lyrics_window.set_lyrics(lyr)
+                lyrics_text = item.lyrics
+                print(f"[main] 使用 item.lyrics ({len(lyrics_text)} 字符)", flush=True)
             else:
                 from pathlib import Path
                 p = Path(item.file_path)
+                # 1. 同目录 .lrc
                 lrc_path = p.with_suffix(".lrc")
+                # 2. 上级 LRC/ 子目录
+                if not lrc_path.exists():
+                    cand = p.parent.parent / "LRC" / (p.stem + ".lrc")
+                    if cand.exists():
+                        lrc_path = cand
+                # 3. 同级 LRC/ 子目录
+                if not lrc_path.exists():
+                    cand = p.parent / "LRC" / (p.stem + ".lrc")
+                    if cand.exists():
+                        lrc_path = cand
+
                 if lrc_path.exists():
-                    lyr = load_lrc_file(str(lrc_path))
-                    self.lyrics_window.set_lyrics(lyr)
-                else:
-                    self.lyrics_window.clear()
-        else:
-            # 在线歌曲
-            if not item.song_id:
-                # 需要先搜 song_id
-                self._play_by_name_in_queue(item)
+                    print(f"[main] 找到本地 LRC: {lrc_path}", flush=True)
+                    try:
+                        lyr = load_lrc_file(str(lrc_path))
+                        print(f"[main] 加载歌词 {len(lyr.lines)} 行", flush=True)
+                        self.lyrics_window.set_lyrics(lyr)
+                        return
+                    except Exception as e:
+                        print(f"[main] 加载 LRC 失败: {e}", flush=True)
+
+                print(f"[main] 未找到本地 LRC，尝试在线获取", flush=True)
+                # 没本地 LRC，用标题 + 歌手去在线搜
+                lyrics_text = None
+
+            if lyrics_text:
+                lyr = parse_lrc(lyrics_text)
+                print(f"[main] 解析歌词 {len(lyr.lines)} 行", flush=True)
+                self.lyrics_window.set_lyrics(lyr)
+            else:
+                # 在线兜底：用标题+歌手搜索
+                title = item.title
+                artist = item.artist
+                req_id_copy = req_id
+
+                def fetch_lyrics():
+                    from core.gequbao_api import search as gsearch
+                    results = gsearch(f"{title} {artist}".strip(), limit=5) or \
+                              gsearch(title, limit=5)
+                    if not results:
+                        return None
+                    # 精确匹配或第一条
+                    target = results[0]
+                    for r in results:
+                        if r.title.strip() == title.strip() and \
+                                r.artist.strip() == artist.strip():
+                            target = r
+                            break
+                    return get_lyrics(target.song_id)
+
+                def on_lyrics(text):
+                    if req_id_copy != self._play_request_id:
+                        return
+                    if text:
+                        lyr = parse_lrc(text)
+                        print(f"[main] 在线兜底歌词 {len(lyr.lines)} 行", flush=True)
+                        self.lyrics_window.set_lyrics(lyr)
+                    else:
+                        print(f"[main] 在线兜底也无歌词", flush=True)
+                        self.lyrics_window.clear()
+
+                run_async(fetch_lyrics, on_done=on_lyrics,
+                          on_error=lambda e: print(f"[main] 歌词兜底失败: {e}", flush=True))
+            return
+
+        # 在线歌曲
+        if not item.song_id:
+            self._play_by_name_in_queue(item, req_id)
+            return
+
+        self._current_song_info = info
+
+        def fetch():
+            data = resolve_song(item.song_id, item.title, item.artist)
+            data["song_id"] = item.song_id
+            return req_id, data
+
+        def on_done(result):
+            rid, data = result
+            if rid != self._play_request_id:
+                print(f"[main] 忽略过期请求 {rid}（当前 {self._play_request_id}）",
+                      flush=True)
                 return
-            self._current_song_info = info
+            self._on_song_resolved(data)
 
-            def fetch():
-                data = resolve_song(item.song_id, item.title, item.artist)
-                data["song_id"] = item.song_id
-                return data
+        run_async(fetch, on_done=on_done, on_error=self._on_play_error)
 
-            run_async(fetch, on_done=self._on_song_resolved,
-                      on_error=self._on_play_error)
-
-    def _play_by_name_in_queue(self, item: QueueItem):
-        """队列项没有 song_id 时先搜索"""
+    def _play_by_name_in_queue(self, item: QueueItem, req_id: int):
         def fetch():
             from core.gequbao_api import search as gsearch
             results = gsearch(f"{item.title} {item.artist}".strip(), limit=20) or \
                       gsearch(item.title, limit=20)
             target = None
             for r in results:
-                if r.title.strip() == item.title.strip() and r.artist.strip() == item.artist.strip():
+                if r.title.strip() == item.title.strip() and \
+                        r.artist.strip() == item.artist.strip():
                     target = r
                     break
             if target is None:
@@ -210,12 +275,18 @@ class MainWindow(QMainWindow):
                 raise RuntimeError("未找到匹配歌曲")
             item.song_id = target.song_id
             data = resolve_song(target.song_id, target.title or item.title,
-                                 target.artist or item.artist)
+                                target.artist or item.artist)
             data["song_id"] = target.song_id
-            return data
+            return req_id, data
 
-        run_async(fetch, on_done=self._on_song_resolved,
-                  on_error=self._on_play_error)
+        def on_done(result):
+            rid, data = result
+            if rid != self._play_request_id:
+                print(f"[main] 忽略过期请求 {rid}", flush=True)
+                return
+            self._on_song_resolved(data)
+
+        run_async(fetch, on_done=on_done, on_error=self._on_play_error)
 
     def _on_song_resolved(self, data: dict):
         info = self._current_song_info
@@ -226,6 +297,14 @@ class MainWindow(QMainWindow):
         url = data.get("url")
         lyrics_text = data.get("lyrics")
 
+        # ============ 详细日志 ============
+        print(f"[main] 解析结果: file={'有' if file_path else '无'} "
+              f"url={'有' if url else '无'} "
+              f"lyrics={'有' if lyrics_text else '无'}"
+              f"{f'({len(lyrics_text)}字符)' if lyrics_text else ''}",
+              flush=True)
+        # ===================================
+
         if file_path:
             self.audio.play_file(file_path, info=info)
         elif url:
@@ -234,11 +313,35 @@ class MainWindow(QMainWindow):
             self._on_play_error("无法获取播放地址")
             return
 
+        # 歌词处理
         if lyrics_text:
             lyr = parse_lrc(lyrics_text)
+            print(f"[main] ✓ 解析歌词 {len(lyr.lines)} 行", flush=True)
             self.lyrics_window.set_lyrics(lyr)
         else:
-            self.lyrics_window.clear()
+            # 兜底：用 song_id 再取一次
+            sid = info.get("song_id")
+            if sid:
+                print(f"[main] data 里无歌词，用 song_id={sid} 兜底获取", flush=True)
+
+                def fetch():
+                    return get_lyrics(sid)
+
+                def on_done_lyrics(text):
+                    if text:
+                        lyr = parse_lrc(text)
+                        print(f"[main] ✓ 兜底歌词 {len(lyr.lines)} 行", flush=True)
+                        self.lyrics_window.set_lyrics(lyr)
+                    else:
+                        print(f"[main] ✗ 兜底也拿不到歌词", flush=True)
+                        self.lyrics_window.clear()
+
+                run_async(fetch, on_done=on_done_lyrics,
+                          on_error=lambda e: print(f"[main] 兜底歌词失败: {e}",
+                                                   flush=True))
+            else:
+                print(f"[main] 无 song_id，无法获取歌词", flush=True)
+                self.lyrics_window.clear()
 
         QTimer.singleShot(500, self.settings_panel.refresh_cache_size)
 
@@ -267,20 +370,15 @@ class MainWindow(QMainWindow):
 
     # ---------- 播放完成 ----------
     def _on_audio_finished(self):
-        """播放完成后按模式自动下一首"""
         if not self.queue.items:
             return
-
         if self.queue.mode == PlaybackMode.LOOP_ONE:
-            # 单曲循环：重播当前
             item = self.queue.current()
             if item:
                 self._play_item(item)
             return
-
         item = self.queue.next()
         if item is None:
-            # 顺序播放到末尾
             self.player_bar.set_playing_ui(False)
             self.statusBar().showMessage("顺序播放结束", 3000)
             return

@@ -1,4 +1,4 @@
-"""歌单面板：热门歌单 + 搜索歌单 + 粘贴分享链接 + 勾选下载 + 每首歌下载按钮"""
+"""歌单面板：带请求编号防止竞态"""
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QPushButton,
@@ -35,13 +35,11 @@ class PlaylistSongRow(QWidget):
         layout.setContentsMargins(6, 2, 6, 2)
         layout.setSpacing(8)
 
-        # 复选框
         self.checkbox = QCheckBox()
         self.checkbox.setFixedWidth(22)
         self.checkbox.stateChanged.connect(lambda _: self.checked_changed.emit())
         layout.addWidget(self.checkbox)
 
-        # 歌名+歌手（双击播放）
         text = f"{title} - {artist}" if artist else title
         self.label = _ClickableLabel(text)
         self.label.setStyleSheet("color: #e6e6e6; background: transparent;")
@@ -50,11 +48,9 @@ class PlaylistSongRow(QWidget):
         self.label.double_clicked.connect(self.play_requested)
         layout.addWidget(self.label, 1)
 
-        # 单曲下载按钮
         self.btn_dl = QPushButton("下载")
         self.btn_dl.setFixedSize(60, 26)
         self.btn_dl.setObjectName("IconButton")
-        self.btn_dl.setToolTip("只下载这一首")
         self.btn_dl.clicked.connect(self.download_requested)
         layout.addWidget(self.btn_dl)
 
@@ -70,29 +66,33 @@ class PlaylistSongRow(QWidget):
 
 
 class PlaylistPanel(QWidget):
-    play_list_requested = pyqtSignal(list, int)         # (PlaylistSong 列表, 起始索引)
-    download_requested = pyqtSignal(list, str)          # (tasks[(title, artist)], playlist_name)
-    download_single_requested = pyqtSignal(str, str)    # (title, artist)
+    play_list_requested = pyqtSignal(list, int)
+    download_requested = pyqtSignal(list, str)
+    download_single_requested = pyqtSignal(str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # ============ 请求编号（防竞态） ============
+        self._songs_request_id = 0
+        self._playlists_request_id = 0
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 16, 20, 12)
         layout.setSpacing(10)
 
-        # ---------- 第一行：平台 + 热门 + 分享 ----------
+        # 第一行
         bar1 = QHBoxLayout()
         bar1.setSpacing(10)
         self.platform = QComboBox()
         self.platform.addItem("酷狗音乐", "kugou")
         self.platform.addItem("QQ音乐", "qq")
+        self.platform.addItem("网易云音乐", "netease") 
 
         self.btn_load = QPushButton("加载热门歌单")
         self.btn_load.setObjectName("PrimaryButton")
         self.btn_load.clicked.connect(self.load_playlists)
 
         self.btn_paste = QPushButton("粘贴歌单链接")
-        self.btn_paste.setToolTip("粘贴酷狗或QQ音乐的分享链接/酷狗码")
         self.btn_paste.clicked.connect(self.paste_share_link)
 
         bar1.addWidget(QLabel("平台："))
@@ -102,12 +102,12 @@ class PlaylistPanel(QWidget):
         bar1.addStretch(1)
         layout.addLayout(bar1)
 
-        # ---------- 第二行：搜索歌单 ----------
+        # 第二行
         bar2 = QHBoxLayout()
         bar2.setSpacing(10)
         self.input_search = QLineEdit()
         self.input_search.setPlaceholderText(
-            "搜索歌单：输入关键词，如「深夜 emo」「抖音热歌」（回车确认）"
+            "搜索歌单：输入关键词（回车确认）"
         )
         self.input_search.returnPressed.connect(self.search_playlists)
         self.btn_search = QPushButton("搜索歌单")
@@ -118,11 +118,10 @@ class PlaylistPanel(QWidget):
         bar2.addWidget(self.btn_search)
         layout.addLayout(bar2)
 
-        # ---------- 左右分栏 ----------
+        # 左右分栏
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
 
-        # 左：歌单列表
         left = QWidget()
         ll = QVBoxLayout(left)
         ll.setContentsMargins(0, 0, 8, 0)
@@ -132,12 +131,9 @@ class PlaylistPanel(QWidget):
         self.list_pl.itemClicked.connect(self._on_playlist_selected)
         ll.addWidget(self.list_pl, 1)
 
-        # 右：歌曲列表 + 操作按钮
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.setContentsMargins(8, 0, 0, 0)
-
-        # 操作栏
         top2 = QHBoxLayout()
         top2.setSpacing(8)
         top2.addWidget(QLabel("歌曲列表"))
@@ -177,27 +173,45 @@ class PlaylistPanel(QWidget):
         self._songs = []
         self._current_playlist_name = ""
 
-    # ---------- 加载热门歌单 ----------
+    # ---------- 加载热门 ----------
     def load_playlists(self):
         platform = self.platform.currentData()
+        self._playlists_request_id += 1
+        my_id = self._playlists_request_id
+
         self.btn_load.setEnabled(False)
         self.status.setText(f"加载 {self.platform.currentText()} 热门歌单中...")
         self.list_pl.clear()
         self.list_songs.clear()
         self.lbl_left_title.setText("歌单列表（热门榜单）")
 
+        def on_done(result):
+            if my_id != self._playlists_request_id:
+                print(f"[playlist] 丢弃过期请求 {my_id}", flush=True)
+                return
+            self._on_playlists(result)
+
         run_async(
             lambda: get_hot_playlists(platform, limit=30),
-            on_done=self._on_playlists,
-            on_error=lambda e: (
-                self.status.setText(f"加载失败：{e}"),
-                self.btn_load.setEnabled(True),
-            ),
+            on_done=on_done,
+            on_error=lambda e: self._on_error_load(e, my_id),
         )
+
+    def _on_error_load(self, err, my_id):
+        if my_id != self._playlists_request_id:
+            return
+        self.status.setText(f"加载失败：{err}")
+        self.btn_load.setEnabled(True)
 
     def _on_playlists(self, playlists):
         self._playlists = playlists
         self.list_pl.clear()
+        if not playlists:
+            self.status.setText(
+                "没有加载到歌单（接口可能已变更，请查看实时日志）"
+            )
+            self.btn_load.setEnabled(True)
+            return
         for p in playlists:
             it = QListWidgetItem(f"{p.name}  ({p.song_count})")
             it.setToolTip(p.name)
@@ -211,6 +225,8 @@ class PlaylistPanel(QWidget):
         if not keyword:
             return
         platform = self.platform.currentData()
+        self._playlists_request_id += 1
+        my_id = self._playlists_request_id
 
         self.btn_search.setEnabled(False)
         self.status.setText(f"搜索歌单「{keyword}」中...")
@@ -218,20 +234,30 @@ class PlaylistPanel(QWidget):
         self.list_songs.clear()
         self.lbl_left_title.setText(f"歌单列表（搜索：{keyword}）")
 
+        def on_done(result):
+            if my_id != self._playlists_request_id:
+                return
+            self._on_search_results(result)
+
         run_async(
             lambda: search_playlists(platform, keyword, limit=30),
-            on_done=self._on_search_results,
-            on_error=lambda e: (
-                self.status.setText(f"搜索失败：{e}"),
-                self.btn_search.setEnabled(True),
-            ),
+            on_done=on_done,
+            on_error=lambda e: self._on_error_search(e, my_id),
         )
+
+    def _on_error_search(self, err, my_id):
+        if my_id != self._playlists_request_id:
+            return
+        self.status.setText(f"搜索失败：{err}")
+        self.btn_search.setEnabled(True)
 
     def _on_search_results(self, playlists):
         self._playlists = playlists
         self.list_pl.clear()
         if not playlists:
-            self.status.setText("没有找到歌单，换个关键词试试")
+            self.status.setText(
+                "没有找到歌单（接口可能已变更，请查看实时日志）"
+            )
             self.btn_search.setEnabled(True)
             return
         for p in playlists:
@@ -272,15 +298,24 @@ class PlaylistPanel(QWidget):
         self.list_songs.clear()
         self.lbl_left_title.setText("歌单列表（分享链接）")
 
+        self._songs_request_id += 1
+        my_id = self._songs_request_id
+
+        def on_done(result):
+            if my_id != self._songs_request_id:
+                print(f"[playlist] 丢弃过期歌曲请求 {my_id}", flush=True)
+                return
+            self._on_pasted_songs(result)
+
         run_async(
             lambda: get_playlist_songs(platform, playlist_id),
-            on_done=self._on_pasted_songs,
-            on_error=lambda e: self.status.setText(f"解析失败：{e}"),
+            on_done=on_done,
+            on_error=lambda e: self._on_error_songs(e, my_id),
         )
 
     def _on_pasted_songs(self, songs):
         if not songs:
-            self.status.setText("未获取到歌曲")
+            self.status.setText("未获取到歌曲（链接可能失效或接口变更）")
             self.list_songs.clear()
             self._songs = []
             return
@@ -297,11 +332,34 @@ class PlaylistPanel(QWidget):
         self.status.setText(f"正在解析歌单：{pl.name}")
         self.list_songs.clear()
 
+        self._songs_request_id += 1
+        my_id = self._songs_request_id
+
+        def on_done(result):
+            if my_id != self._songs_request_id:
+                print(f"[playlist] 丢弃过期歌曲请求 {my_id}", flush=True)
+                return
+            self._on_songs(result)
+            if result:
+                self.status.setText(
+                    f"歌单「{pl.name}」共 {len(result)} 首 · "
+                    f"双击播放 / 下载按钮单曲下载 / 右上角批量下载"
+                )
+            else:
+                self.status.setText(
+                    f"歌单「{pl.name}」未返回歌曲（接口可能变更）"
+                )
+
         run_async(
             lambda: get_playlist_songs(pl.platform, pl.playlist_id),
-            on_done=self._on_songs,
-            on_error=lambda e: self.status.setText(f"解析失败：{e}"),
+            on_done=on_done,
+            on_error=lambda e: self._on_error_songs(e, my_id),
         )
+
+    def _on_error_songs(self, err, my_id):
+        if my_id != self._songs_request_id:
+            return
+        self.status.setText(f"解析失败：{err}")
 
     def _on_songs(self, songs):
         self._songs = songs
@@ -332,12 +390,10 @@ class PlaylistPanel(QWidget):
         checked = self._get_checked_count()
         total = len(self._songs)
         if total == 0:
-            self.status.setText("")
             return
         if checked == 0:
             self.status.setText(
-                f"歌单共 {total} 首 · 勾选后点「下载勾选」，或双击歌名播放、"
-                f"点行尾「下载」单曲下载"
+                f"歌单共 {total} 首 · 勾选后点「下载勾选」，或双击歌名播放"
             )
         else:
             self.status.setText(
@@ -354,7 +410,6 @@ class PlaylistPanel(QWidget):
         return count
 
     def _get_checked_tasks(self):
-        """返回 [(title, artist), ...]"""
         tasks = []
         for i in range(self.list_songs.count()):
             item = self.list_songs.item(i)
@@ -389,5 +444,5 @@ class PlaylistPanel(QWidget):
         name = self._current_playlist_name or "歌单"
         self.download_requested.emit(tasks, name)
         self.status.setText(
-            f"已加入下载队列：{len(tasks)} 首（完成后会在下载目录生成 {name}.m3u）"
+            f"已加入下载队列：{len(tasks)} 首（完成后生成 {name}.m3u）"
         )
