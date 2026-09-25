@@ -1,11 +1,9 @@
-# GeQuPlayer 依赖列表（版本锁定）
-# 一键安装：双击 install.bat
+# GeQuPlayer 依赖列表
+# 使用版本范围而非固定版本，避免因版本不存在导致安装失败
 
-PyQt6==6.11.0
-just-playback==0.1.9
-requests==2.33.1
-httpx==0.28.1
-h2==4.4.1
-curl_cffi==0.16.3
-playwright==1.62.0
-ddddocr==1.5.6
+PyQt6>=6.5.0
+just-playback>=0.1.6
+requests>=2.31.0
+curl-cffi>=0.5.0
+playwright>=1.40.0
+ddddocr>=1.4.0

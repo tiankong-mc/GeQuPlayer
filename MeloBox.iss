@@ -14,8 +14,8 @@
 [Setup]
 ; ---------- 基本信息 ----------
 AppName=GeQuPlayer
-AppVersion=1.2.2
-AppVerName=GeQuPlayer 1.2.2
+AppVersion=1.2.3
+AppVerName=GeQuPlayer 1.2.3
 AppPublisher=tiankong
 AppPublisherURL=https://github.com/tiankong-mc/GeQuPlayer
 AppSupportURL=https://github.com/tiankong-mc/GeQuPlayer/issues
@@ -30,7 +30,7 @@ AllowNoIcons=yes
 
 ; ---------- 输出 ----------
 OutputDir=installer_output
-OutputBaseFilename=GeQuPlayer_Setup_v1.2.2
+OutputBaseFilename=GeQuPlayer_Setup_v1.2.3
 SetupIconFile=myicon.ico
 UninstallDisplayIcon={app}\MusicPlayer.exe
 UninstallDisplayName=GeQuPlayer

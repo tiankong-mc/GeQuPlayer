@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller 打包配置 - GeQuPlayer v1.2.2
+PyInstaller 打包配置 - GeQuPlayer v1.2.3
 使用：
     python -m PyInstaller build.spec --noconfirm
 产物：
