@@ -41,7 +41,6 @@ class PlayerBar(QWidget):
         layout.setContentsMargins(20, 8, 20, 8)
         layout.setSpacing(10)
 
-        # 歌曲信息
         info_box = QVBoxLayout()
         info_box.setSpacing(2)
         self.lbl_title = QLabel("未播放")
@@ -56,7 +55,6 @@ class PlayerBar(QWidget):
         info_wrap.setFixedWidth(220)
         layout.addWidget(info_wrap)
 
-        # 播放模式
         self.btn_mode = QPushButton()
         self.btn_mode.setObjectName("IconButton")
         self.btn_mode.setFixedSize(38, 38)
@@ -65,7 +63,6 @@ class PlayerBar(QWidget):
         self.btn_mode.clicked.connect(lambda: self.mode_change_requested.emit())
         layout.addWidget(self.btn_mode)
 
-        # 上一首
         self.btn_prev = QPushButton()
         self.btn_prev.setObjectName("IconButton")
         self.btn_prev.setFixedSize(38, 38)
@@ -75,7 +72,6 @@ class PlayerBar(QWidget):
         self.btn_prev.clicked.connect(lambda: self.prev_requested.emit())
         layout.addWidget(self.btn_prev)
 
-        # 播放/暂停
         self.btn_play = QPushButton()
         self.btn_play.setObjectName("PrimaryButton")
         self.btn_play.setFixedSize(48, 48)
@@ -84,7 +80,6 @@ class PlayerBar(QWidget):
         self.btn_play.setToolTip("播放/暂停")
         layout.addWidget(self.btn_play)
 
-        # 下一首
         self.btn_next = QPushButton()
         self.btn_next.setObjectName("IconButton")
         self.btn_next.setFixedSize(38, 38)
@@ -94,7 +89,6 @@ class PlayerBar(QWidget):
         self.btn_next.clicked.connect(lambda: self.next_requested.emit())
         layout.addWidget(self.btn_next)
 
-        # 进度
         self.lbl_cur = QLabel("00:00")
         self.lbl_cur.setFixedWidth(46)
         self.lbl_cur.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -109,7 +103,6 @@ class PlayerBar(QWidget):
         layout.addWidget(self.slider, 1)
         layout.addWidget(self.lbl_total)
 
-        # 歌词
         self.btn_lyrics = QPushButton("词")
         self.btn_lyrics.setObjectName("IconButton")
         self.btn_lyrics.setCheckable(True)
@@ -126,7 +119,6 @@ class PlayerBar(QWidget):
         self.btn_lock.clicked.connect(self._on_lock_btn)
         layout.addWidget(self.btn_lock)
 
-        # 连接
         self.btn_play.clicked.connect(self.audio.toggle_pause)
         self.audio.state_changed.connect(self._on_state)
         self.audio.position_changed.connect(self._on_position)
@@ -136,10 +128,8 @@ class PlayerBar(QWidget):
         self.slider.sliderPressed.connect(lambda: setattr(self, "_is_slider_dragging", True))
         self.slider.sliderReleased.connect(lambda: setattr(self, "_is_slider_dragging", False))
 
-        # 初始化播放模式图标
         self.set_mode("loop_list")
 
-    # ---------- 接口 ----------
     def set_song(self, title: str, artist: str = ""):
         self.lbl_title.setText(title or "未播放")
         self.lbl_artist.setText(artist or "")
@@ -162,7 +152,6 @@ class PlayerBar(QWidget):
     def set_playing_ui(self, playing: bool):
         self._update_play_icon(playing)
 
-    # ---------- 内部 ----------
     def _update_play_icon(self, playing: bool):
         if playing:
             self.btn_play.setIcon(get_icon("pause", PLAY_ICON_SIZE, color="#0e0f12"))
@@ -170,7 +159,12 @@ class PlayerBar(QWidget):
             self.btn_play.setIcon(get_icon("play", PLAY_ICON_SIZE, color="#0e0f12"))
 
     def _on_state(self, state: str):
-        self._update_play_icon(state == "playing")
+        if state == "loading":
+            # 加载中：禁用按钮避免误点
+            self.btn_play.setEnabled(False)
+        else:
+            self.btn_play.setEnabled(True)
+            self._update_play_icon(state == "playing")
 
     def _on_position(self, cur: float, total: float):
         self.lbl_cur.setText(format_time(cur))

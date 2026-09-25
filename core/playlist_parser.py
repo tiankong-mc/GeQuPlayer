@@ -1,6 +1,14 @@
-"""各大音乐网站歌单解析（酷狗 / QQ音乐 / 网易云）"""
+"""各大音乐网站歌单解析（酷狗 / QQ音乐 / 网易云）
+
+关键：
+- 酷狗部分域名只有 HTTP（无有效证书），HTTP / HTTPS 混着放候选列表
+- QQ 音乐优先用 u.y.qq.com 新接口，老接口兜底
+- 网易云使用官方 API，分批拉取全量歌曲（每批 3 次重试）
+- 所有解析都做类型防御，避免 'str' object has no attribute 'get'
+"""
 import json
 import re
+import time
 import html as html_lib
 from typing import List, Optional, Tuple
 
@@ -63,7 +71,6 @@ def parse_playlist_url(url: str) -> Tuple[Optional[str], Optional[str]]:
     if m:
         return "qq", m.group(1)
 
-    # 网易云
     m = re.search(r"music\.163\.com/[^\s]*?[?&#]id=(\d+)", url, re.I)
     if m:
         return "netease", m.group(1)
@@ -576,7 +583,6 @@ def search_qq_playlists(keyword: str, limit: int = 30) -> List[PlaylistItem]:
         except Exception as e:
             print(f"[qq] 搜歌单异常: {str(e)[:100]}", flush=True)
 
-    # legacy
     try:
         r = get("https://c.y.qq.com/soso/fcgi-bin/client_music_search_songlist",
                 params={"query": keyword, "num": limit, "page": 0, "flag": 1,
@@ -627,14 +633,13 @@ NETEASE_HEADERS = {
 
 
 def search_netease_playlists(keyword: str, limit: int = 30) -> List[PlaylistItem]:
-    """搜索网易云歌单"""
     try:
         import requests
         url = "https://music.163.com/api/search/get/web"
         params = {
             "csrf_token": "",
             "s": keyword,
-            "type": 1000,   # 1000 = 歌单
+            "type": 1000,
             "offset": 0,
             "total": "true",
             "limit": limit,
@@ -676,15 +681,10 @@ def search_netease_playlists(keyword: str, limit: int = 30) -> List[PlaylistItem
 
 
 def netease_playlist_songs(playlist_id: str, limit: int = 0) -> List[PlaylistSong]:
-    """
-    获取网易云歌单所有歌曲。
-    先拿 trackIds（完整），再批量查详情。
-    limit=0 表示不限制。
-    """
+    """获取网易云歌单所有歌曲。limit=0 表示不限制。"""
     try:
         import requests
 
-        # 1. 歌单详情，拿完整 trackIds
         url = "https://music.163.com/api/v6/playlist/detail"
         params = {"id": playlist_id, "n": 100000, "s": 0}
         r = requests.get(url, params=params, headers=NETEASE_HEADERS, timeout=15)
@@ -701,7 +701,6 @@ def netease_playlist_songs(playlist_id: str, limit: int = 0) -> List[PlaylistSon
         if not isinstance(track_ids_raw, list):
             track_ids_raw = []
 
-        # 兜底：如果没有 trackIds，用 tracks
         if not track_ids_raw:
             tracks = pl.get("tracks") or []
             if isinstance(tracks, list):
@@ -726,7 +725,6 @@ def netease_playlist_songs(playlist_id: str, limit: int = 0) -> List[PlaylistSon
                 return songs[:limit] if limit else songs
             return []
 
-        # 提取 id 列表
         ids = []
         for item in track_ids_raw:
             if isinstance(item, dict) and item.get("id"):
@@ -740,7 +738,6 @@ def netease_playlist_songs(playlist_id: str, limit: int = 0) -> List[PlaylistSon
         print(f"[netease] 歌单 {playlist_id} trackIds 共 {len(ids)} 首，拉取详情...",
               flush=True)
 
-        # 2. 批量查详情（一次最多 500 个更稳）
         songs = []
         BATCH = 500
         total = len(ids)
@@ -748,41 +745,61 @@ def netease_playlist_songs(playlist_id: str, limit: int = 0) -> List[PlaylistSon
             batch = ids[start:start + BATCH]
             c_param = json.dumps([{"id": i} for i in batch])
             api = "https://music.163.com/api/v3/song/detail"
-            try:
-                r2 = requests.post(
-                    api,
-                    data={"c": c_param},
-                    headers={**NETEASE_HEADERS,
-                             "Content-Type": "application/x-www-form-urlencoded"},
-                    timeout=20,
-                )
-                if r2.status_code != 200:
-                    print(f"[netease] 详情 HTTP {r2.status_code}", flush=True)
-                    continue
-                d2 = r2.json()
-                song_list = d2.get("songs") or []
-                if not isinstance(song_list, list):
-                    continue
-                for t in song_list:
-                    if not isinstance(t, dict):
-                        continue
-                    name = (t.get("name") or "").strip()
-                    ar = t.get("ar") or t.get("artists") or []
-                    artists = []
-                    if isinstance(ar, list):
-                        for a in ar:
-                            if isinstance(a, dict) and a.get("name"):
-                                artists.append(a["name"])
-                    if name:
-                        songs.append(PlaylistSong(
-                            title=name,
-                            artist="、".join(artists),
-                        ))
-                print(f"[netease] 已拉取 {min(start + BATCH, total)}/{total}",
+
+            batch_success = False
+            for attempt in range(1, 4):
+                try:
+                    r2 = requests.post(
+                        api,
+                        data={"c": c_param},
+                        headers={**NETEASE_HEADERS,
+                                 "Content-Type": "application/x-www-form-urlencoded"},
+                        timeout=20,
+                    )
+                    if r2.status_code != 200:
+                        print(f"[netease] 详情 HTTP {r2.status_code} "
+                              f"(批次 {start}, 尝试 {attempt})", flush=True)
+                        if attempt < 3:
+                            time.sleep(0.5 * attempt)
+                            continue
+                        break
+
+                    d2 = r2.json()
+                    song_list = d2.get("songs") or []
+                    if not isinstance(song_list, list):
+                        if attempt < 3:
+                            time.sleep(0.5 * attempt)
+                            continue
+                        break
+
+                    for t in song_list:
+                        if not isinstance(t, dict):
+                            continue
+                        name = (t.get("name") or "").strip()
+                        ar = t.get("ar") or t.get("artists") or []
+                        artists = []
+                        if isinstance(ar, list):
+                            for a in ar:
+                                if isinstance(a, dict) and a.get("name"):
+                                    artists.append(a["name"])
+                        if name:
+                            songs.append(PlaylistSong(
+                                title=name,
+                                artist="、".join(artists),
+                            ))
+                    batch_success = True
+                    print(f"[netease] 已拉取 {min(start + BATCH, total)}/{total}",
+                          flush=True)
+                    break
+                except Exception as e:
+                    print(f"[netease] 批次异常 (尝试 {attempt}): "
+                          f"{str(e)[:100]}", flush=True)
+                    if attempt < 3:
+                        time.sleep(0.5 * attempt)
+
+            if not batch_success:
+                print(f"[netease] 批次 {start}-{min(start+BATCH, total)} 失败",
                       flush=True)
-            except Exception as e:
-                print(f"[netease] 批次异常: {str(e)[:100]}", flush=True)
-                continue
 
         print(f"[netease] 歌单 {playlist_id} → {len(songs)} 首", flush=True)
         return songs[:limit] if limit else songs
@@ -800,7 +817,6 @@ def get_hot_playlists(platform: str, limit: int = 30) -> List[PlaylistItem]:
         return kugou_hot_playlists(limit)
     if platform == "qq":
         return qq_hot_playlists(limit)
-    # 网易云没有"热门榜单"接口（需要登录才有），返回空
     return []
 
 

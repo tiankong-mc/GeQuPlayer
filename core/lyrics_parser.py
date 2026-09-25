@@ -6,6 +6,8 @@ from typing import List, Tuple
 _LINE_TAG = re.compile(r"\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]")
 # 逐字标签：<00:12.34>
 _WORD_TAG = re.compile(r"<(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?>")
+# 元信息标签：[ti:] [ar:] [al:] [by:] [offset:] 等
+_META_TAG = re.compile(r"^\[(ti|ar|al|by|offset|re|ve|length|kana|hash):", re.I)
 
 
 def _to_seconds(mm: str, ss: str, frac: str = "") -> float:
@@ -26,7 +28,6 @@ class LyricLine:
     def __init__(self, time: float, text: str, words=None):
         self.time = time
         self.text = text
-        # words: List[(abs_time, text_chunk)]  用于逐字染色
         self.words: List[Tuple[float, str]] = words or []
 
     def __repr__(self):
@@ -44,7 +45,6 @@ class Lyrics:
         return not self.lines
 
     def index_at(self, t: float) -> int:
-        """返回时间 t 对应的歌词行索引；未到第一行返回 -1"""
         if not self.lines:
             return -1
         lo, hi, res = 0, len(self.lines) - 1, -1
@@ -66,13 +66,14 @@ def parse_lrc(text: str) -> Lyrics:
     offset = 0.0
     # 解析元信息
     for raw in text.splitlines():
-        m = re.match(r"\[offset:([+-]?\d+)\]", raw.strip(), re.I)
+        s = raw.strip()
+        m = re.match(r"\[offset:([+-]?\d+)\]", s, re.I)
         if m:
             offset = int(m.group(1)) / 1000.0
-        m = re.match(r"\[ti:(.*?)\]", raw.strip(), re.I)
+        m = re.match(r"\[ti:(.*?)\]", s, re.I)
         if m:
             lyrics.title = m.group(1).strip()
-        m = re.match(r"\[ar:(.*?)\]", raw.strip(), re.I)
+        m = re.match(r"\[ar:(.*?)\]", s, re.I)
         if m:
             lyrics.artist = m.group(1).strip()
 
@@ -80,11 +81,14 @@ def parse_lrc(text: str) -> Lyrics:
 
     for raw in text.splitlines():
         raw = raw.strip()
-        if not raw or raw.startswith("["):
-            # 跳过 offset / ti / ar / al / by 等元信息行
-            if not re.match(r"^\[\d", raw):
-                if not _LINE_TAG.search(raw):
-                    continue
+        if not raw:
+            continue
+        # 明确的元信息行 → 跳过
+        if _META_TAG.match(raw):
+            continue
+        # 没有时间标签 → 不是歌词行
+        if not _LINE_TAG.search(raw):
+            continue
 
         line_tags = list(_LINE_TAG.finditer(raw))
         if not line_tags:
@@ -92,7 +96,7 @@ def parse_lrc(text: str) -> Lyrics:
 
         body = raw[line_tags[-1].end():]
 
-        # 解析逐字
+        # 逐字
         words: List[Tuple[float, str]] = []
         if _WORD_TAG.search(body):
             cursor = 0

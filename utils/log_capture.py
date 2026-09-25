@@ -17,7 +17,8 @@ class LogCapture(QObject):
         self._original_stdout = None
         self._original_stderr = None
         self._buffer = ""
-        self._max_buffer = 20000
+        self._max_buffer = 50000
+        self._max_line = 5000
 
     @classmethod
     def instance(cls) -> "LogCapture":
@@ -41,9 +42,7 @@ class LogCapture(QObject):
             self._original_stdout = None
             self._original_stderr = None
 
-    # ---------- 文件对象接口 ----------
     def write(self, text):
-        # 保留终端输出
         if self._original_stdout:
             try:
                 self._original_stdout.write(text)
@@ -51,11 +50,12 @@ class LogCapture(QObject):
             except Exception:
                 pass
 
-        # 按行分割并发出信号
         self._buffer += text
         while "\n" in self._buffer:
             line, self._buffer = self._buffer.split("\n", 1)
             line = line.rstrip("\r")
+            if len(line) > self._max_line:
+                line = line[:self._max_line] + "...[truncated]"
             if line:
                 try:
                     self.message_written.emit(line)

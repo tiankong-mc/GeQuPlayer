@@ -11,7 +11,7 @@ _ICON_DIR = os.path.join(
     "assets", "icons"
 )
 
-DEFAULT_COLOR = "#e6e6e6"   # 深色主题下的浅灰色
+DEFAULT_COLOR = "#e6e6e6"
 
 
 def get_icon(name: str, size: int = 22, color: str = None) -> QIcon:
@@ -37,7 +37,6 @@ def get_icon(name: str, size: int = 22, color: str = None) -> QIcon:
         with open(svg_path, "r", encoding="utf-8") as f:
             svg_data = f.read()
 
-        # 替换颜色
         svg_data = svg_data.replace("currentColor", color)
 
         renderer = QSvgRenderer(svg_data.encode("utf-8"))
@@ -54,3 +53,8 @@ def get_icon(name: str, size: int = 22, color: str = None) -> QIcon:
     except Exception as e:
         print(f"[icon] 加载 {name} 失败: {e}", flush=True)
         return QIcon()
+
+
+def clear_icon_cache():
+    """清空图标缓存（开发时修改 SVG 后调用）"""
+    _ICON_CACHE.clear()

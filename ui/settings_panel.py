@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
 from config import (
     DEFAULT_DOWNLOAD_DIR, APP_NAME, APP_VERSION,
     DEFAULT_CONCURRENT_TASKS, DEFAULT_LYRICS_MODE,
+    CACHE_MARKER_FILE,
 )
 from core.gequbao_api import (
     get_cache_dir, get_default_cache_dir, is_valid_cache_dir,
@@ -63,7 +64,6 @@ def _path_label_style() -> str:
 
 
 def _primary_btn_style() -> str:
-    """主按钮内联样式（双保险，避免 QSS 全局失效）"""
     return """
         QPushButton {
             background-color: #1db954;
@@ -250,13 +250,11 @@ class SettingsPanel(QWidget):
         btn_refresh = QPushButton("刷新")
         btn_refresh.clicked.connect(self.refresh_cache_size)
 
-        # ============ 清空缓存：用内联样式双保险 ============
         self.btn_clear_cache = QPushButton("清空缓存")
         self.btn_clear_cache.setObjectName("PrimaryButton")
         self.btn_clear_cache.setFixedWidth(120)
         self.btn_clear_cache.setStyleSheet(_primary_btn_style())
         self.btn_clear_cache.clicked.connect(self._clear_cache)
-        # ===================================================
 
         ops_btns.addWidget(btn_refresh)
         ops_btns.addStretch(1)
@@ -270,13 +268,11 @@ class SettingsPanel(QWidget):
         a_layout = QVBoxLayout(gb_about)
         a_layout.setSpacing(10)
 
-        # ---- 第一行：检查更新按钮（左对齐） ----
         self.btn_check_update = QPushButton("检查更新")
         self.btn_check_update.setFixedWidth(120)
         self.btn_check_update.clicked.connect(self._on_check_update)
         a_layout.addWidget(self.btn_check_update, alignment=Qt.AlignmentFlag.AlignLeft)
 
-        # ---- 第二行：进度条（默认隐藏，下载时显示） ----
         self.update_progress = QProgressBar()
         self.update_progress.setRange(0, 100)
         self.update_progress.setValue(0)
@@ -284,7 +280,6 @@ class SettingsPanel(QWidget):
         self.update_progress.setVisible(False)
         a_layout.addWidget(self.update_progress)
 
-        # ---- 第三行：反馈 + 关于 ----
         row2 = QHBoxLayout()
         row2.setSpacing(10)
         btn_feedback = QPushButton("反馈问题")
@@ -509,7 +504,7 @@ class SettingsPanel(QWidget):
         ans = QMessageBox.question(
             self, "清空缓存",
             f"确定要清空以下目录中的所有缓存文件吗？\n\n{cache_dir}\n\n"
-            f"（只删除文件，不会递归删除子目录）",
+            f"（会递归清理所有子目录，但保留缓存标识文件）",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -520,16 +515,15 @@ class SettingsPanel(QWidget):
         failed = 0
         try:
             for f in list(cache_dir.iterdir()):
-                if f.name.startswith("."):
+                if f.name == CACHE_MARKER_FILE:
                     continue
                 try:
                     if f.is_file() or f.is_symlink():
                         f.unlink()
                         deleted += 1
                     elif f.is_dir():
-                        if f.name.startswith(".") and f.name.endswith("_chunks"):
-                            shutil.rmtree(f, ignore_errors=True)
-                            deleted += 1
+                        shutil.rmtree(f, ignore_errors=True)
+                        deleted += 1
                 except Exception:
                     failed += 1
         except Exception as e:
@@ -538,9 +532,9 @@ class SettingsPanel(QWidget):
         self.refresh_cache_size()
         self.cache_cleared.emit()
 
-        msg = f"已删除 {deleted} 个缓存文件。"
+        msg = f"已删除 {deleted} 个缓存项。"
         if failed:
-            msg += f"\n{failed} 个文件删除失败（可能正在被占用）。"
+            msg += f"\n{failed} 个删除失败（可能正在被占用）。"
         QMessageBox.information(self, "完成", msg)
 
     # ---------- 下载目录 ----------

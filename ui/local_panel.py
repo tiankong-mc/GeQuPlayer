@@ -55,8 +55,8 @@ class LocalPanel(QWidget):
         super().__init__(parent)
         self._all_songs = []
         self._playlists = []
-        self._current_list = []       # 右侧显示的完整列表（未过滤）
-        self._displayed_list = []     # 右侧实际显示的列表（可能经过搜索过滤）
+        self._current_list = []
+        self._displayed_list = []
 
         cfg = load_config()
         self._dir = cfg.get("download_dir", DEFAULT_DOWNLOAD_DIR)
@@ -65,7 +65,6 @@ class LocalPanel(QWidget):
         layout.setContentsMargins(20, 16, 20, 12)
         layout.setSpacing(12)
 
-        # ---------- 顶部：目录 + 刷新 ----------
         bar = QHBoxLayout()
         bar.setSpacing(10)
         self.lbl_dir = QLabel(f"目录：{self._dir}")
@@ -80,7 +79,6 @@ class LocalPanel(QWidget):
         bar.addWidget(btn_refresh)
         layout.addLayout(bar)
 
-        # ---------- 搜索栏 ----------
         search_bar = QHBoxLayout()
         search_bar.setSpacing(8)
         self.input_search = QLineEdit()
@@ -94,11 +92,9 @@ class LocalPanel(QWidget):
         search_bar.addWidget(self.btn_clear_search)
         layout.addLayout(search_bar)
 
-        # ---------- 左右分栏 ----------
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
 
-        # 左：歌单列表
         left = QWidget()
         ll = QVBoxLayout(left)
         ll.setContentsMargins(0, 0, 8, 0)
@@ -109,7 +105,6 @@ class LocalPanel(QWidget):
         self.list_pl.customContextMenuRequested.connect(self._on_playlist_menu)
         ll.addWidget(self.list_pl, 1)
 
-        # 右：歌曲列表
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.setContentsMargins(8, 0, 0, 0)
@@ -163,7 +158,6 @@ class LocalPanel(QWidget):
 
         self.list_pl.clear()
 
-        # 全部歌曲（特殊项）
         item_all = QListWidgetItem()
         item_all.setSizeHint(QSize(0, 32))
         self.list_pl.addItem(item_all)
@@ -173,7 +167,6 @@ class LocalPanel(QWidget):
         lbl_all.double_clicked.connect(lambda: self._show_all_songs())
         self.list_pl.setItemWidget(item_all, lbl_all)
 
-        # 所有歌单
         for pl in self._playlists:
             item = QListWidgetItem()
             item.setSizeHint(QSize(0, 32))
@@ -190,21 +183,26 @@ class LocalPanel(QWidget):
         )
 
     def _show_all_songs(self):
+        # 清空搜索框，避免旧关键词过滤新列表
+        if self.input_search.text():
+            self.input_search.blockSignals(True)
+            self.input_search.clear()
+            self.input_search.blockSignals(False)
+
         self._current_list = list(self._all_songs)
         self.lbl_right_title.setText(f"全部歌曲（{len(self._current_list)}）")
-        # 保持当前搜索词
-        if self.input_search.text().strip():
-            self._on_search_changed(self.input_search.text())
-        else:
-            self._render_songs(self._current_list)
+        self._render_songs(self._current_list)
 
     def _show_playlist(self, pl: LocalPlaylist):
+        # 清空搜索框，避免旧关键词过滤新列表
+        if self.input_search.text():
+            self.input_search.blockSignals(True)
+            self.input_search.clear()
+            self.input_search.blockSignals(False)
+
         self._current_list = list(pl.songs)
         self.lbl_right_title.setText(f"{pl.name}（{len(self._current_list)}）")
-        if self.input_search.text().strip():
-            self._on_search_changed(self.input_search.text())
-        else:
-            self._render_songs(self._current_list)
+        self._render_songs(self._current_list)
 
     def _render_songs(self, songs):
         self._displayed_list = list(songs)

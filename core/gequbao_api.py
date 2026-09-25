@@ -97,19 +97,12 @@ def delete_cache_file(path: str, verbose: bool = True) -> bool:
         return False
 
 
-# ---------- 缓存目录（安全版） ----------
+# ---------- 缓存目录 ----------
 def _default_cache_root() -> Path:
-    """默认缓存根目录（系统 temp）"""
     return Path(tempfile.gettempdir())
 
 
 def get_cache_dir() -> Path:
-    """
-    返回真实的缓存目录。
-    - 用户在设置里指定的路径会作为"根"，程序固定在其下创建 GeQuPlayerCache 子目录
-    - 子目录里会写入标识文件（用于清理时验证）
-    - 这样即使用户误选桌面/文档，清空缓存也不会误删用户文件
-    """
     try:
         from utils.helpers import load_config
         cfg = load_config()
@@ -122,7 +115,6 @@ def get_cache_dir() -> Path:
     else:
         base = _default_cache_root()
 
-    # 强制使用程序专属子目录
     cache = base / CACHE_SUBDIR_NAME
 
     try:
@@ -132,7 +124,6 @@ def get_cache_dir() -> Path:
             marker.write_text(f"{APP_NAME} cache marker\n", encoding="utf-8")
     except Exception as e:
         print(f"[cache] 无法创建缓存目录 {cache}: {e}", flush=True)
-        # 兜底：退回系统 temp
         cache = _default_cache_root() / CACHE_SUBDIR_NAME
         try:
             cache.mkdir(parents=True, exist_ok=True)
@@ -146,7 +137,6 @@ def get_cache_dir() -> Path:
 
 
 def is_valid_cache_dir(path: Path) -> bool:
-    """验证一个目录是否是程序自己的缓存目录（存在标识文件）"""
     try:
         if not path or not path.is_dir():
             return False
@@ -163,11 +153,10 @@ def get_default_cache_dir() -> Path:
     return _default_cache_root() / CACHE_SUBDIR_NAME
 
 
-# 兼容旧引用
 _CACHE_DIR = _default_cache_root() / CACHE_SUBDIR_NAME
 
 
-# ---------- 选择器 ----------
+# ---------- 按钮选择器 ----------
 DOWNLOAD_BUTTON_SELECTORS = [
     "a:has-text('下载歌曲')", "button:has-text('下载歌曲')",
     "text=下载歌曲", ".btn:has-text('下载歌曲')",
@@ -251,6 +240,15 @@ def _is_stopped(stop_flag) -> bool:
     return stop_flag is not None and stop_flag.is_set()
 
 
+def _safe_close(browser):
+    """安全关闭浏览器，忽略一切异常"""
+    try:
+        if browser is not None:
+            browser.close()
+    except Exception:
+        pass
+
+
 # ---------- 搜索 ----------
 _SONG_LINK_RE = re.compile(
     r'<a\s+href="/music/(\d+)"[^>]*class="hover-zoom[^"]*"[^>]*title="([^"]*)"', re.I)
@@ -269,17 +267,16 @@ def _parse_title_artist(raw):
     return raw, ""
 
 
-_session_lock = threading.Lock()
-_session = None
+# ---------- Session（每线程独立） ----------
+_session_local = threading.local()
 
 
 def _get_session():
-    global _session
-    with _session_lock:
-        if _session is None:
-            _session = curl_requests.Session(impersonate=IMPERSONATE)
-            _session.headers.update({"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"})
-    return _session
+    if not hasattr(_session_local, "session"):
+        s = curl_requests.Session(impersonate=IMPERSONATE)
+        s.headers.update({"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"})
+        _session_local.session = s
+    return _session_local.session
 
 
 def search(keyword: str, limit: int = 40) -> List[Song]:
@@ -313,12 +310,14 @@ def _pw_cache_path(song_id: str) -> Path:
 
 
 def _clean_song_cache(song_id: str):
-    for p in [_pw_cache_path(song_id), _pw_cache_path(song_id).with_suffix(".part")]:
-        try:
-            if p.exists():
-                p.unlink()
-        except Exception:
-            pass
+    """清理某首歌的缓存。正在播放的文件会被保护，不会被删。"""
+    delete_cache_file(str(_pw_cache_path(song_id)), verbose=False)
+    try:
+        p = _pw_cache_path(song_id).with_suffix(".part")
+        if p.exists():
+            p.unlink()
+    except Exception:
+        pass
 
 
 # ---------- OCR ----------
@@ -720,31 +719,31 @@ def _pw_session_attempt(song_id: str, session_idx: int, stop_flag=None
                 page.goto(detail_url, wait_until="domcontentloaded", timeout=45000)
             except Exception as e:
                 print(f"[pw] 页面加载失败: {str(e)[:100]}", flush=True)
-                browser.close()
+                _safe_close(browser)
                 return None, False
 
             if _is_stopped(stop_flag):
-                browser.close()
+                _safe_close(browser)
                 return None, False
 
             page.wait_for_timeout(2500)
             _throttle()
 
             if _is_stopped(stop_flag):
-                browser.close()
+                _safe_close(browser)
                 return None, False
 
             print(f"[pw] 会话{session_idx} 步骤1：点击下载", flush=True)
             if not _click_any(page, DOWNLOAD_BUTTON_SELECTORS, timeout=3000):
                 print("[pw] 未找到下载按钮", flush=True)
-                browser.close()
+                _safe_close(browser)
                 return None, False
 
             print(f"[pw] 会话{session_idx} 步骤2：等待倒计时", flush=True)
             quality_found = False
             for i in range(45):
                 if _is_stopped(stop_flag):
-                    browser.close()
+                    _safe_close(browser)
                     return None, False
                 page.wait_for_timeout(2000)
                 if _has_any(page, QUALITY_DIALOG_SELECTORS):
@@ -753,7 +752,7 @@ def _pw_session_attempt(song_id: str, session_idx: int, stop_flag=None
                     break
             if not quality_found:
                 print("[pw] 音质对话框超时", flush=True)
-                browser.close()
+                _safe_close(browser)
                 return None, False
 
             page.wait_for_timeout(1000)
@@ -764,7 +763,7 @@ def _pw_session_attempt(song_id: str, session_idx: int, stop_flag=None
                 q_clicked = _click_any(page, HIGH_QUALITY_SELECTORS, timeout=3000)
             if not q_clicked:
                 print("[pw] 未找到音质按钮", flush=True)
-                browser.close()
+                _safe_close(browser)
                 return None, False
 
             page.wait_for_timeout(2000)
@@ -773,7 +772,7 @@ def _pw_session_attempt(song_id: str, session_idx: int, stop_flag=None
                 solved = False
                 for attempt in range(3):
                     if _is_stopped(stop_flag):
-                        browser.close()
+                        _safe_close(browser)
                         return None, False
                     if _solve_captcha(page):
                         page.wait_for_timeout(2500)
@@ -785,7 +784,7 @@ def _pw_session_attempt(song_id: str, session_idx: int, stop_flag=None
                         page.wait_for_timeout(1500)
                 if not solved and _has_captcha(page):
                     print("[pw] 验证码未通过", flush=True)
-                    browser.close()
+                    _safe_close(browser)
                     return None, False
 
             print(f"[pw] 会话{session_idx} 步骤5：等待下载触发", flush=True)
@@ -797,7 +796,7 @@ def _pw_session_attempt(song_id: str, session_idx: int, stop_flag=None
             if all_urls:
                 result = _try_download_urls(page, list(reversed(all_urls)), cache, stop_flag)
                 if result:
-                    browser.close()
+                    _safe_close(browser)
                     return result, False
 
             if not all_urls:
@@ -808,14 +807,14 @@ def _pw_session_attempt(song_id: str, session_idx: int, stop_flag=None
                     print(f"[pw] 会话{session_idx} 补收 {len(all_urls)} 个 URL", flush=True)
                     result = _try_download_urls(page, list(reversed(all_urls)), cache, stop_flag)
                     if result:
-                        browser.close()
+                        _safe_close(browser)
                         return result, False
 
             if not all_urls:
-                browser.close()
+                _safe_close(browser)
                 return None, True
 
-            browser.close()
+            _safe_close(browser)
     except Exception as e:
         print(f"[pw] 会话{session_idx} 异常: {str(e)[:150]}", flush=True)
     return None, False
@@ -879,6 +878,7 @@ def _fetch_play_url_new_api(song_id: str) -> Optional[str]:
     return None
 
 
+# ---------- 歌词 ----------
 def _get_lyrics_from_detail(song_id: str) -> Optional[str]:
     detail_url = GEQUBAO_DETAIL_URL.format(song_id=song_id)
     try:
@@ -899,6 +899,7 @@ def _get_lyrics_from_detail(song_id: str) -> Optional[str]:
     return None
 
 
+# ---------- 统一入口 ----------
 def resolve_song(song_id: str, title: str = "", artist: str = "",
                  max_retry: int = 1, stop_flag=None) -> Dict:
     if _is_stopped(stop_flag):

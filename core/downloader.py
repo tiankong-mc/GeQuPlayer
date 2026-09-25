@@ -17,7 +17,8 @@ from core.gequbao_api import (
 from utils.helpers import sanitize_filename
 
 
-MAX_RETRY_PER_TASK = 1
+# 单个任务内部重试次数（含首次，共 2 次尝试）
+MAX_RETRY_PER_TASK = 2
 COOLDOWN_SECONDS = 15
 TOTAL_ROUNDS = 2
 
@@ -97,18 +98,21 @@ class Downloader(QObject):
 
     # ---------- 内部 ----------
     @staticmethod
-    def _unique_path(directory: str, base: str, ext: str) -> str:
-        p = os.path.join(directory, base + ext)
-        if not os.path.exists(p):
-            return p
-        i = 1
+    def _unique_base(mp3_dir: str, lrc_dir: str, base: str) -> str:
+        """
+        找一个 mp3 和 lrc 都不冲突的 base。
+        保证 MP3 和 LRC 的文件名始终对应。
+        """
+        i = 0
         while i < 10000:
-            p = os.path.join(directory, f"{base} ({i}){ext}")
-            if not os.path.exists(p):
-                return p
+            candidate = base if i == 0 else f"{base} ({i})"
+            mp3_path = os.path.join(mp3_dir, candidate + ".mp3")
+            lrc_path = os.path.join(lrc_dir, candidate + ".lrc")
+            if not os.path.exists(mp3_path) and not os.path.exists(lrc_path):
+                return candidate
             i += 1
-        import time as _t
-        return os.path.join(directory, f"{base}_{int(_t.time())}{ext}")
+        # 兜底：时间戳
+        return f"{base}_{int(time.time())}"
 
     def _interruptible_sleep(self, seconds):
         end = time.time() + seconds
@@ -189,6 +193,7 @@ class Downloader(QObject):
 
                 for fut in as_completed(futures):
                     if self._stop_flag.is_set():
+                        # 只能取消尚未执行的任务；正在执行的任务会自行检查 stop_flag 后退出
                         for f in futures:
                             f.cancel()
                         break
@@ -241,7 +246,6 @@ class Downloader(QObject):
                 return
             songs = []
             for t in done_tasks:
-                # LRC 现在在 {download_dir}/LRC/{base}.lrc
                 base = os.path.splitext(os.path.basename(t.filepath))[0]
                 lrc_path = os.path.join(self.download_dir,
                                         DOWNLOAD_LRC_SUBDIR, base + ".lrc")
@@ -285,10 +289,12 @@ class Downloader(QObject):
                 last_err = task.error or "未知错误"
             except Exception as e:
                 last_err = str(e)
+                print(f"[downloader] 任务异常: {e}", flush=True)
 
             if self._stop_flag.is_set():
                 return
 
+            # 搜不到 → 不再重试
             if task.status == "skipped":
                 print(f"[downloader] 「{task.display}」搜不到，跳过重试", flush=True)
                 return
@@ -300,9 +306,7 @@ class Downloader(QObject):
                     pass
 
         with self._lock:
-            if task.status == "skipped":
-                pass
-            elif task.status == "stopped":
+            if task.status in ("skipped", "stopped", "done"):
                 pass
             else:
                 task.status = "failed"
@@ -357,7 +361,6 @@ class Downloader(QObject):
             task.error = "下载失败"
             return False
 
-        # ============ 分成 MP3/ 和 LRC/ 子目录 ============
         mp3_dir = os.path.join(self.download_dir, DOWNLOAD_MP3_SUBDIR)
         lrc_dir = os.path.join(self.download_dir, DOWNLOAD_LRC_SUBDIR)
         try:
@@ -369,8 +372,10 @@ class Downloader(QObject):
 
         base = f"{artist} - {title}" if artist else title
         base = sanitize_filename(base)
-
-        dest_mp3 = self._unique_path(mp3_dir, base, ".mp3")
+        # MP3 和 LRC 使用同一个 base（保证文件名对应）
+        unique_base = self._unique_base(mp3_dir, lrc_dir, base)
+        dest_mp3 = os.path.join(mp3_dir, unique_base + ".mp3")
+        dest_lrc = os.path.join(lrc_dir, unique_base + ".lrc")
 
         try:
             shutil.copy2(src_file, dest_mp3)
@@ -379,7 +384,6 @@ class Downloader(QObject):
             return False
 
         if lyrics:
-            dest_lrc = self._unique_path(lrc_dir, base, ".lrc")
             try:
                 with open(dest_lrc, "w", encoding="utf-8") as f:
                     f.write(lyrics)
